@@ -13,14 +13,16 @@
 
 #include "sqlite3.h"
 
-#ifndef DETAIL_TABLES
-#define DETAIL_TABLES 50 /* tables beyond this many are listed by name only */
+#ifndef DETAIL_MAX
+#define DETAIL_MAX 50 /* tables and views beyond this many are listed by name only */
 #endif
 #define PREVIEW_ROWS 20
 #define MAX_COLS 100        /* columns shown per table (SQLite allows 2000) */
 #define CELL_CHARS 200
-#define SQL_CHARS 4000
+#define SQL_CHARS 4000      /* CREATE statement of a table or view */
+#define LINE_SQL_CHARS 200  /* CREATE statement of an index or trigger, in a list */
 #define NAME_CHARS 200
+#define LIST_MAX 2000       /* entries in a list of names */
 #define OUT_SOFT_CAP (6u << 20) /* stop adding rows here; the host refuses more than 8 MiB */
 #define OP_BUDGET_CALLS 25000   /* progress-handler calls of 4096 VM steps each: about 100 M steps */
 
@@ -194,9 +196,17 @@ static int parse_opts(const char *s, size_t n, int *dark) {
 typedef struct {
   sqlite3 *db;
   sqlite3_str *o;
-  sqlite3_stmt *cols; /* column names of a table */
-  int truncated;      /* the output reached OUT_SOFT_CAP */
+  sqlite3_stmt *cols;  /* column names of a table */
+  sqlite3_stmt *stat;  /* row count estimate from sqlite_stat1, or NULL when there is none */
+  int truncated;       /* the output reached OUT_SOFT_CAP */
 } Ctx;
+
+enum { K_TABLE, K_VIEW, K_INDEX, K_TRIGGER, K_COUNT };
+static const char *const TYPE[K_COUNT] = {"table", "view", "index", "trigger"};
+static const char *const TITLE[K_COUNT] = {"Tables", "Views", "Indexes", "Triggers"};
+
+/* Everything the overview reads from sqlite_schema leaves out SQLite's own objects. */
+#define USER_OBJECTS "name NOT LIKE 'sqlite\\_%' ESCAPE '\\'"
 
 static int op_budget(void *calls) { return ++*(unsigned *)calls > OP_BUDGET_CALLS; }
 
@@ -231,19 +241,40 @@ static void cell(sqlite3_str *o, sqlite3_stmt *s, int i) {
   }
 }
 
-static void table_section(Ctx *c, const char *name, int name_len, const char *sql, int sql_len) {
+/* The row count sqlite_stat1 recorded for a table the last time ANALYZE ran (0
+ * if there is none). It is an estimate and may be stale. */
+static long long estimated_rows(Ctx *c, const char *name, int name_len) {
+  if (c->stat == NULL) return 0;
+  long long n = 0;
+  sqlite3_reset(c->stat);
+  sqlite3_bind_text(c->stat, 1, name, name_len, SQLITE_STATIC);
+  if (sqlite3_step(c->stat) == SQLITE_ROW) {
+    const char *s = (const char *)sqlite3_column_text(c->stat, 0); /* "N a b c": N rows, then rows per key */
+    if (s != NULL) n = atoll(s);
+  }
+  sqlite3_reset(c->stat);
+  return n < 0 ? 0 : n;
+}
+
+/* A name and its CREATE statement. */
+static void heading_and_sql(Ctx *c, const char *name, int name_len, const char *sql, int sql_len) {
   sqlite3_str *o = c->o;
-  put(o, "<section><h2>");
+  put(o, "<section><h3>");
   text(o, name, (size_t)name_len, NAME_CHARS);
-  put(o, "</h2>");
+  put(o, "</h3>");
   if (sql != NULL) {
     put(o, "<pre>");
     text(o, sql, (size_t)sql_len, SQL_CHARS);
     put(o, "</pre>");
-    if (sqlite3_strnicmp(sql, "CREATE VIRTUAL TABLE", 20) == 0) {
-      put(o, "<p class=m>Virtual table: its rows are not shown.</p></section>");
-      return;
-    }
+  }
+}
+
+static void table_section(Ctx *c, const char *name, int name_len, const char *sql, int sql_len) {
+  sqlite3_str *o = c->o;
+  heading_and_sql(c, name, name_len, sql, sql_len);
+  if (sql != NULL && sqlite3_strnicmp(sql, "CREATE VIRTUAL TABLE", 20) == 0) {
+    put(o, "<p class=m>Virtual table: its rows are not shown.</p></section>");
+    return;
   }
 
   /* The columns, and the query that reads them. */
@@ -271,6 +302,8 @@ static void table_section(Ctx *c, const char *name, int name_len, const char *sq
     put(o, "</section>");
     return;
   }
+  /* LIMIT 21 for 20 rows: the extra row says whether there are more. There is
+   * no COUNT(*): on a big table it reads the whole table. */
   sqlite3_str_appendf(q, " FROM main.\"%w\" LIMIT %d", name, PREVIEW_ROWS + 1);
   char *qs = sqlite3_str_finish(q);
   char *hs = sqlite3_str_finish(h);
@@ -298,13 +331,95 @@ static void table_section(Ctx *c, const char *name, int name_len, const char *sq
     nrows++;
   }
   put(o, "</table>");
-  if (rc != SQLITE_ROW && rc != SQLITE_DONE) db_error(c);
-  else if (more) sqlite3_str_appendf(o, "<p class=m>The first %d rows; the table has more.</p>", PREVIEW_ROWS);
-  else if (nrows == 0) put(o, "<p class=m>Empty table.</p>");
-  else sqlite3_str_appendf(o, "<p class=m>%d row%s.</p>", nrows, nrows == 1 ? "" : "s");
+  if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+    db_error(c);
+  } else if (more) {
+    long long est = estimated_rows(c, name, name_len);
+    if (est > PREVIEW_ROWS)
+      sqlite3_str_appendf(o, "<p class=m>About %lld rows (an estimate from sqlite_stat1); the first %d are shown.</p>", est, PREVIEW_ROWS);
+    else
+      sqlite3_str_appendf(o, "<p class=m>At least %d rows; the first %d are shown.</p>", PREVIEW_ROWS + 1, PREVIEW_ROWS);
+  } else if (nrows == 0) {
+    put(o, "<p class=m>Empty table.</p>");
+  } else {
+    sqlite3_str_appendf(o, "<p class=m>%d row%s.</p>", nrows, nrows == 1 ? "" : "s");
+  }
   if (more_cols) sqlite3_str_appendf(o, "<p class=m>Only the first %d columns are shown.</p>", MAX_COLS);
   sqlite3_finalize(st);
   put(o, "</section>");
+}
+
+/* One kind of object: tables and views in detail for the first DETAIL_MAX, then
+ * names only; indexes and triggers as one line each. */
+static void objects(Ctx *c, int kind, int count) {
+  if (count == 0) return;
+  sqlite3_str *o = c->o;
+  sqlite3_str_appendf(o, "<section><h2>%s (%d)</h2>", TITLE[kind], count);
+  sqlite3_str *q = sqlite3_str_new(NULL);
+  sqlite3_str_appendf(q, "SELECT name, tbl_name, sql FROM main.sqlite_schema WHERE type='%s' AND %s", TYPE[kind], USER_OBJECTS);
+  sqlite3_stmt *st;
+  int rc = sqlite3_prepare_v2(c->db, sqlite3_str_value(q), -1, &st, NULL);
+  if (rc != SQLITE_OK) {
+    db_error(c);
+    put(o, "</section>");
+    return;
+  }
+  int n = 0, listed = 0;
+  while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+    if (full(o)) { c->truncated = 1; break; }
+    const char *name = (const char *)sqlite3_column_text(st, 0);
+    int name_len = sqlite3_column_bytes(st, 0);
+    const char *tbl = (const char *)sqlite3_column_text(st, 1);
+    int tbl_len = sqlite3_column_bytes(st, 1);
+    const char *sql = (const char *)sqlite3_column_text(st, 2);
+    int sql_len = sqlite3_column_bytes(st, 2);
+    if (name == NULL) continue;
+    if (kind <= K_VIEW && n < DETAIL_MAX) {
+      if (kind == K_TABLE) table_section(c, name, name_len, sql, sql_len);
+      else { heading_and_sql(c, name, name_len, sql, sql_len); put(o, "</section>"); }
+    } else {
+      if (listed == 0) {
+        if (kind <= K_VIEW) sqlite3_str_appendf(o, "<p class=m>Only the names of the other %d are listed.</p>", count - n);
+        put(o, "<ul>");
+      }
+      if (listed == LIST_MAX) { sqlite3_str_appendf(o, "<li class=m>... and %d more</li>", count - n); break; }
+      put(o, "<li>");
+      text(o, name, (size_t)name_len, NAME_CHARS);
+      if (kind >= K_INDEX && tbl != NULL) {
+        put(o, " <span class=m>on ");
+        text(o, tbl, (size_t)tbl_len, NAME_CHARS);
+        put(o, "</span>");
+      }
+      if (kind >= K_INDEX && sql != NULL) {
+        put(o, "<br><code>");
+        text(o, sql, (size_t)sql_len, LINE_SQL_CHARS);
+        put(o, "</code>");
+      }
+      put(o, "</li>");
+      listed++;
+    }
+    n++;
+  }
+  if (listed) put(o, "</ul>");
+  if (rc != SQLITE_ROW && rc != SQLITE_DONE) db_error(c);
+  sqlite3_finalize(st);
+  put(o, "</section>");
+}
+
+/* The reason SQLite gave for not reading the file, in words for the person who
+ * opened it. "file is not a database" is what an encrypted file (SQLCipher) and
+ * a file with a damaged header both give. */
+static int32_t db_fail(dcode_buf *out, sqlite3 *db, int rc) {
+  if (rc == SQLITE_NOMEM) return -2;
+  sqlite3_str *m = sqlite3_str_new(NULL);
+  int code = rc & 0xff;
+  if (code == SQLITE_NOTADB)
+    sqlite3_str_appendf(m, "SQLite cannot read this file although it starts like a SQLite database: it may be encrypted (for example with SQLCipher) or damaged. SQLite says: %s.", sqlite3_errmsg(db));
+  else if (code == SQLITE_CORRUPT)
+    sqlite3_str_appendf(m, "This SQLite database is damaged. SQLite says: %s.", sqlite3_errmsg(db));
+  else
+    sqlite3_str_appendf(m, "SQLite could not read this file: %s.", sqlite3_errmsg(db));
+  return say(out, sqlite3_str_value(m));
 }
 
 static const char MAGIC[16] = "SQLite format 3"; /* the 16th byte is the NUL */
@@ -333,7 +448,7 @@ int32_t dcode_render_file(const uint8_t *name_ptr, size_t name_len,
 
   /* The buffer is the host's and stays untouched; SQLITE_DESERIALIZE_READONLY
    * means SQLite never writes to it either. A database in WAL mode (file format
-   * versions 2 in the header) cannot be opened from memory: the WAL needs shared
+   * version 2 in the header) cannot be opened from memory: the WAL needs shared
    * memory, which the memdb VFS does not have, and SQLite answers "unable to open
    * database file". We only have the main file anyway, so open a copy that says
    * "rollback journal" (1): the pages are the same. */
@@ -348,79 +463,58 @@ int32_t dcode_render_file(const uint8_t *name_ptr, size_t name_len,
     flags |= SQLITE_DESERIALIZE_FREEONCLOSE;
   }
   rc = sqlite3_deserialize(db, "main", buf, (sqlite3_int64)data_len, (sqlite3_int64)data_len, flags);
-  if (rc != SQLITE_OK) {
-    if (rc == SQLITE_NOMEM) return -2;
-    sqlite3_str *m = sqlite3_str_new(NULL);
-    sqlite3_str_appendf(m, "SQLite could not open this file: %s.", sqlite3_errmsg(db));
-    int32_t r = say(out, sqlite3_str_value(m));
-    return r;
-  }
+  if (rc != SQLITE_OK) return db_fail(out, db, rc);
 
-  /* The first read of the file: a wrong page size, a damaged header or an
-   * encrypted file shows up here as "file is not a database" and the like. */
+  /* The first read of the file, and the one that parses the whole schema: a
+   * wrong page size, a damaged header or an encrypted file shows up here. */
+  int count[K_COUNT] = {0};
   sqlite3_stmt *st;
-  const char *tables_where = "type='table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'";
-  sqlite3_str *qs = sqlite3_str_new(NULL);
-  sqlite3_str_appendf(qs, "SELECT count(*) FROM main.sqlite_schema WHERE %s", tables_where);
-  rc = sqlite3_prepare_v2(db, sqlite3_str_value(qs), -1, &st, NULL);
-  if (rc == SQLITE_OK) rc = sqlite3_step(st);
-  if (rc != SQLITE_ROW) {
-    if (rc == SQLITE_NOMEM) return -2;
-    sqlite3_str *m = sqlite3_str_new(NULL);
-    sqlite3_str_appendf(m, "SQLite could not read this file: %s.", sqlite3_errmsg(db));
-    return say(out, sqlite3_str_value(m));
+  rc = sqlite3_prepare_v2(db, "SELECT type, count(*) FROM main.sqlite_schema WHERE " USER_OBJECTS " GROUP BY type", -1, &st, NULL);
+  if (rc != SQLITE_OK) return db_fail(out, db, rc);
+  while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+    const char *type = (const char *)sqlite3_column_text(st, 0);
+    for (int k = 0; type != NULL && k < K_COUNT; k++)
+      if (strcmp(type, TYPE[k]) == 0) count[k] = sqlite3_column_int(st, 1);
   }
-  int ntables = sqlite3_column_int(st, 0);
+  if (rc != SQLITE_DONE) return db_fail(out, db, rc);
   sqlite3_finalize(st);
 
   sqlite3_str *o = sqlite3_str_new(NULL);
-  Ctx c = {db, o, NULL, 0};
+  Ctx c = {db, o, NULL, NULL, 0};
   sqlite3_str_appendf(o,
       "<!doctype html><html><head><meta charset=\"utf-8\"><title>SQLite overview</title><style>"
       "body{font:13px/1.45 system-ui,sans-serif;color:%s;margin:12px}"
-      "h1{font-size:16px;margin:0 0 4px}h2{font-size:14px;margin:0 0 6px}section{margin:18px 0}"
-      "pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0 8px;padding:6px 8px;background:%s;border:1px solid %s;border-radius:4px;font:12px ui-monospace,monospace}"
+      "h1{font-size:16px;margin:0 0 4px}h2{font-size:15px;margin:22px 0 4px;padding-bottom:3px;border-bottom:1px solid %s}h3{font-size:14px;margin:0 0 6px}"
+      "section{margin:14px 0}ul{margin:6px 0;padding-left:20px}li{margin:2px 0}"
+      "pre,code{font:12px ui-monospace,monospace}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0 8px;padding:6px 8px;background:%s;border:1px solid %s;border-radius:4px}"
+      "code{overflow-wrap:anywhere}"
       "table{border-collapse:collapse}th,td{border:1px solid %s;padding:2px 6px;text-align:left;vertical-align:top;font:12px ui-monospace,monospace;max-width:420px;overflow-wrap:anywhere}"
       "th{background:%s}.m{opacity:.65}td.m{font-style:italic}.n{text-align:right}.e{color:%s}"
       "</style></head><body>",
-      dark ? "#e6edf3" : "#1f2328", dark ? "#161b22" : "#f6f8fa", dark ? "#30363d" : "#d0d7de",
+      dark ? "#e6edf3" : "#1f2328", dark ? "#30363d" : "#d0d7de", dark ? "#161b22" : "#f6f8fa", dark ? "#30363d" : "#d0d7de",
       dark ? "#30363d" : "#d0d7de", dark ? "#161b22" : "#f6f8fa", dark ? "#ff7b72" : "#cf222e");
   put(o, "<h1>");
   text(o, name_ptr ? (const char *)name_ptr : "", name_len, NAME_CHARS);
-  sqlite3_str_appendf(o, "</h1><p class=m>SQLite database, %lld bytes, %d table%s.", (long long)data_len, ntables, ntables == 1 ? "" : "s");
-  put(o, "</p>");
-  if (wal)
+  sqlite3_str_appendf(o, "</h1><p class=m>SQLite database, %lld bytes: %d table%s, %d view%s, %d index%s, %d trigger%s.</p>",
+      (long long)data_len, count[K_TABLE], count[K_TABLE] == 1 ? "" : "s", count[K_VIEW], count[K_VIEW] == 1 ? "" : "s",
+      count[K_INDEX], count[K_INDEX] == 1 ? "" : "es", count[K_TRIGGER], count[K_TRIGGER] == 1 ? "" : "s");
+  int nobjects = count[K_TABLE] + count[K_VIEW] + count[K_INDEX] + count[K_TRIGGER];
+  if (wal && nobjects == 0)
+    put(o, "<p class=e>This database is in WAL mode and its main file has no tables: the data may still be in the -wal file, which is not read here.</p>");
+  else if (wal)
     put(o, "<p class=m>This database is in WAL mode. Only the main file was read: changes that are still in the -wal file are not shown.</p>");
+  else if (nobjects == 0)
+    put(o, "<p class=m>The database is empty.</p>");
 
-  sqlite3_str *tq = sqlite3_str_new(NULL);
-  sqlite3_str_appendf(tq, "SELECT name, sql FROM main.sqlite_schema WHERE %s", tables_where);
-  rc = sqlite3_prepare_v2(db, sqlite3_str_value(tq), -1, &st, NULL);
-  if (rc == SQLITE_OK)
-    rc = sqlite3_prepare_v2(db, "SELECT name FROM pragma_table_xinfo(?1, 'main') WHERE hidden IN (0, 2, 3)", -1, &c.cols, NULL);
+  rc = sqlite3_prepare_v2(db, "SELECT name FROM pragma_table_xinfo(?1, 'main') WHERE hidden IN (0, 2, 3)", -1, &c.cols, NULL);
   if (rc != SQLITE_OK) {
     if (rc == SQLITE_NOMEM) return -2;
     db_error(&c);
   } else {
-    int shown = 0;
-    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-      if (full(o)) { c.truncated = 1; break; }
-      const char *name = (const char *)sqlite3_column_text(st, 0);
-      int name_len = sqlite3_column_bytes(st, 0);
-      const char *sql = (const char *)sqlite3_column_text(st, 1);
-      int sql_len = sqlite3_column_bytes(st, 1);
-      if (name == NULL) continue;
-      if (shown < DETAIL_TABLES) {
-        table_section(&c, name, name_len, sql, sql_len);
-      } else {
-        if (shown == DETAIL_TABLES) put(o, "<section><h2>More tables</h2><p class=m>Only the names are listed.</p><ul>");
-        put(o, "<li>");
-        text(o, name, (size_t)name_len, NAME_CHARS);
-        put(o, "</li>");
-      }
-      shown++;
-    }
-    if (shown > DETAIL_TABLES) put(o, "</ul></section>");
-    if (rc != SQLITE_DONE && rc != SQLITE_ROW) db_error(&c);
+    /* ANALYZE writes sqlite_stat1; without it there is no estimate. */
+    rc = sqlite3_prepare_v2(db, "SELECT stat FROM main.sqlite_stat1 WHERE tbl=?1 LIMIT 1", -1, &c.stat, NULL);
+    if (rc == SQLITE_NOMEM) return -2;
+    for (int k = 0; k < K_COUNT; k++) objects(&c, k, count[k]);
   }
   if (c.truncated) put(o, "<p class=e>Truncated: the overview reached its size limit.</p>");
   put(o, "</body></html>");
