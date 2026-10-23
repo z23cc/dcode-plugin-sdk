@@ -55,6 +55,8 @@ const FILE_LIMIT = 32 * 1048576; // the largest file the host hands to dcode_ren
 // The policy the DCode viewer puts on a plugin's HTML page (SPEC.md, "HTML output"). A copy, like BUILTIN_EXTENSIONS:
 // the viewer's own string is PLUGIN_HTML_CSP in DCode's gui-app (src/lib/plugin-html.ts).
 const VIEWER_CSP = "default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
+// A <link ...> start tag, quoted attribute values included (the viewer removes every <link>).
+const LINK_ELEMENT = /<link\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
 const BUILTIN_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".pdf", ".docx", ".md", ".markdown", ".mmd", ".mermaid"]);
 const LOG_LIMIT = 16384;
 const WASI_FUNCS = new Set(
@@ -399,7 +401,8 @@ function checkSvg(svg) {
 
 const HTML_FORBIDDEN_ELEMENTS = new Set(["script", "link", "meta", "base", "form", "iframe", "frame", "frameset", "object", "embed", "portal", "applet"]);
 const HTML_FORBIDDEN_ATTRS = new Set(["href", "xlink:href", "ping", "action", "formaction", "srcset", "background"]);
-const HTML_DATA_ONLY_ATTRS = new Set(["src", "poster", "data", "lowsrc", "dynsrc"]);
+// The viewer keeps `src` only on these elements and only as a data: URL; `poster` it always removes (measured with DOMPurify 3.4.17 and its configuration).
+const HTML_DATA_SRC_TAGS = new Set(["img", "video", "audio", "source", "track", "image"]);
 
 /**
  * The rules of SPEC.md "HTML output", as far as a script can know them. The DCode viewer keeps only the
@@ -425,12 +428,14 @@ function checkHtml(html) {
   for (const m of body.matchAll(tagRe)) {
     if (m[1]) continue;
     const tag = m[2].toLowerCase();
-    if (HTML_FORBIDDEN_ELEMENTS.has(tag)) seen.add(`<${tag}> element (the viewer removes it)`);
+    if (HTML_FORBIDDEN_ELEMENTS.has(tag)) seen.add(`<${tag}> element (the viewer removes it${tag === "frameset" ? "; a frameset that comes first in the page empties the whole page" : ""})`);
     for (const a of m[3].matchAll(/([^\s"'<>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)) {
       const an = a[1].toLowerCase(), av = decode(a[2] ?? a[3] ?? a[4] ?? "");
       if (/^on[a-z]/.test(an)) seen.add(`event handler attribute ${a[1]} (the viewer removes it; there is no script anyway)`);
       else if (HTML_FORBIDDEN_ATTRS.has(an)) seen.add(`${a[1]} attribute (the viewer removes it${an === "href" || an === "xlink:href" ? "; a link is shown as plain text" : ""})`);
-      else if (HTML_DATA_ONLY_ATTRS.has(an) && !/^[ \t]*data:/.test(av)) seen.add(`${a[1]}=${JSON.stringify(av.slice(0, 40))} (only a URL that starts with lower-case data:, after any spaces or tabs, is kept)`);
+      else if (an === "poster") seen.add("poster attribute (the viewer always removes it)");
+      else if (an === "src" && !HTML_DATA_SRC_TAGS.has(tag)) seen.add(`src on <${tag}> (the viewer keeps src only on img, video, audio, source and track)`);
+      else if (an === "src" && !/^[ \t]*data:/.test(av)) seen.add(`src=${JSON.stringify(av.slice(0, 40))} (only a URL that starts with lower-case data:, after any spaces or tabs, is kept)`);
       else if (an === "style") css(av, "a style attribute");
     }
   }
@@ -584,8 +589,9 @@ function usage() {
   --dev         skip the signature check (a plugin for 'dcode plugin install --dev')
   --lang        the language to send (default: the first language in the manifest)
   --out         write every SVG or HTML page and an index.html preview, light and dark, into this directory. An HTML page
-                is put under the viewer's content-security policy and shown in a sandboxed frame (nothing is sanitized here:
-                the viewer would also strip what the check reports), so opening index.html makes no request
+                goes under the viewer's content-security policy, loses its <link> elements (a policy does not cover
+                dns-prefetch and preconnect) and is shown in a sandboxed frame. Nothing else is sanitized, as the viewer
+                would: a link stays in the page, and a browser may look up its host name ahead of time
   --fuzz        how many odd inputs to try, for each extension point the plugin has (default 40)
   --show-log    print what the plugin wrote with fd_write`);
   process.exit(2);
@@ -960,8 +966,10 @@ if (isMainThread) {
     });
     // File previews: an SVG as an image, an HTML page in a frame with sandbox="" like the viewer's (no script, no navigation).
     // This preview does NOT sanitize: the viewer runs the page through DOMPurify first, this tool does not. What keeps the
-    // page from making a request is the viewer's shell: charset, then the viewer's CSP, before any of the plugin's text,
-    // and the frame's sandbox. (checkHtml above tells you what the viewer would strip.)
+    // page from making a request is the viewer's shell (charset, then the viewer's CSP, before any of the plugin's text),
+    // the frame's sandbox, and the removal of every <link>: `<link rel=dns-prefetch|preconnect>` is not under a CSP, and the
+    // viewer removes <link> too. Not covered: an <a href> stays in the page, and a browser is free to look its host name up
+    // ahead of time (the viewer removes href for that reason). checkHtml above tells you what the viewer would strip.
     const pageShell = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${VIEWER_CSP}">`;
     const attr = (t) => esc(t).replace(/"/g, "&quot;");
     const fcards = fileNames.map((n) => {
@@ -970,7 +978,7 @@ if (isMainThread) {
         const r = fileRendered[`${n}\0${t}`];
         if (!r) return `<div class="panel ${t}">(no output)</div>`;
         const f = `${b}.${t}.${r.rc === 0 ? "svg" : "html"}`;
-        fs.writeFileSync(path.join(opts.out, f), r.rc === 0 ? r.text : pageShell + r.text);
+        fs.writeFileSync(path.join(opts.out, f), r.rc === 0 ? r.text : pageShell + r.text.replace(LINK_ELEMENT, ""));
         return `<div class="panel ${t}">${r.rc === 0 ? `<img src="${attr(f)}" alt="">` : `<iframe sandbox="" referrerpolicy="no-referrer" src="${attr(f)}" title="${attr(f)}"></iframe>`}</div>`;
       });
       return `<section><h2>${esc(b)}</h2><div class="pair">${panels.join("")}</div></section>`;
