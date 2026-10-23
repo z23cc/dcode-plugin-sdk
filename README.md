@@ -10,8 +10,8 @@ A plugin cannot read files, open connections or keep data. The host gives it no 
 | --- | --- |
 | [`SPEC.md`](SPEC.md) | **Plugin ABI 1**, the normative specification. Everything you need to write a plugin in any language that compiles to WebAssembly. |
 | [`template/`](template) | A Rust crate to start from: the ABI glue is done, you write the renderer. |
-| [`plugins/graphviz-dot/`](plugins/graphviz-dot) | The reference plugin: renders Graphviz DOT (```` ```dot ````, ```` ```graphviz ````). |
-| [`plugins/graphviz-dot-layout-rs/`](plugins/graphviz-dot-layout-rs) | A second DOT plugin, pure Rust on [`layout-rs`](https://crates.io/crates/layout-rs). Smaller, with less DOT coverage. |
+| [`plugins/graphviz-dot/`](plugins/graphviz-dot) | The reference plugin: Graphviz 16.1.0 compiled with wasi-sdk, renders DOT (```` ```dot ````, ```` ```graphviz ````). |
+| [`plugins/graphviz-dot-layout-rs/`](plugins/graphviz-dot-layout-rs) | A second DOT plugin, pure Rust on [`layout-rs`](https://crates.io/crates/layout-rs). Smaller and MIT licensed, but no clusters and slow on large graphs. |
 
 ## Write a plugin
 
@@ -44,4 +44,4 @@ dcode plugin list
 
 ## License
 
-Unless a directory carries its own license files, this repository is under the [MIT License](LICENSE). The built plugin in `plugins/graphviz-dot/` contains Graphviz, which is under the Eclipse Public License 1.0; see the license files in that directory.
+This repository is under the [MIT License](LICENSE), with one exception: the **built** plugin `graphviz-dot.wasm` from `plugins/graphviz-dot/` contains Graphviz and is covered by the Eclipse Public License 2.0. See [`plugins/graphviz-dot/NOTICE.md`](plugins/graphviz-dot/NOTICE.md) and [`LICENSE-EPL-2.0.txt`](plugins/graphviz-dot/LICENSE-EPL-2.0.txt) there. The sources written for that plugin are MIT. Third-party notices for the other DOT plugin are in [`plugins/graphviz-dot-layout-rs/THIRD_PARTY_NOTICES.md`](plugins/graphviz-dot-layout-rs/THIRD_PARTY_NOTICES.md).

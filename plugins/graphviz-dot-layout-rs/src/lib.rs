@@ -64,10 +64,11 @@ unsafe fn write_out(out: *mut DcodeBuf, text: String) -> i32 {
     v.extend_from_slice(text.as_bytes());
     let b = v.into_boxed_slice(); // capacity == len, so dcode_free(ptr, len) matches
     let len = b.len();
-    *out = DcodeBuf {
+    // `out` has no alignment guarantee.
+    out.write_unaligned(DcodeBuf {
         ptr: Box::into_raw(b) as *mut u8,
         len,
-    };
+    });
     0
 }
 
@@ -102,11 +103,9 @@ pub unsafe extern "C" fn dcode_render_block(
 }
 
 /// `{"theme":"dark"}` -> Dark. A missing or unknown theme is light; anything
-/// that is not a JSON object is invalid. Unknown fields are ignored.
+/// that is not a JSON object (including empty input) is invalid. Unknown
+/// fields are ignored.
 fn parse_theme(opts: &[u8]) -> Option<Theme> {
-    if opts.iter().all(u8::is_ascii_whitespace) {
-        return Some(Theme::Light);
-    }
     let v: serde_json::Value = serde_json::from_slice(opts).ok()?;
     let obj = v.as_object()?;
     Some(match obj.get("theme").and_then(|t| t.as_str()) {

@@ -55,7 +55,28 @@ A plugin MUST be a WebAssembly **core module**. It MUST NOT be a component. It c
 
 ## WebAssembly features
 
-<!-- TODO(owner): filled in after the Graphviz build; do not edit -->
+The host compiles a plugin with the WebAssembly engine of Node.js 24 (V8 13.6), with default settings and no flags. ABI 1 has no feature list of its own: a module that uses something the engine does not accept fails to compile and is **refused at install time**. The memory rules in [Module shape](#module-shape) apply on top of that.
+
+Compilation was checked on Node 24.21.0 with one small module per feature:
+
+| Feature | Accepted by the engine | Notes |
+| --- | --- | --- |
+| Core 1.0, mutable globals | yes | |
+| Sign-extension operators | yes | Emitted by default by Rust and wasi-sdk |
+| Non-trapping float-to-int | yes | Emitted by default by Rust and wasi-sdk |
+| Multi-value | yes | Emitted by default by Rust and wasi-sdk |
+| Bulk memory | yes | Emitted by default by Rust and wasi-sdk (`memory.copy`, `memory.fill`) |
+| Reference types | yes | Emitted by default by Rust and wasi-sdk (explicit table index in `call_indirect`) |
+| Fixed-width SIMD (128-bit), relaxed SIMD | yes | |
+| Tail calls | yes | |
+| Exception handling, `try_table`/`exnref` form | yes | The legacy `try`/`catch` form was not tested |
+| Extended constant expressions | yes | |
+| GC | yes | |
+| Multiple memories, 64-bit memory, shared memory and atomics | yes, in the engine | **Not allowed by ABI 1**: the module must have exactly one 32-bit, non-shared memory |
+
+The first six rows are the set that current toolchains emit without being asked: Rust 1.97 for `wasm32-unknown-unknown` and wasi-sdk 34 for `wasm32-wasip1` emit nothing beyond these, and so does the Graphviz reference plugin. **A plugin SHOULD stay within the first six rows.** The engine of a future host may differ from today's.
+
+A plugin cannot use threads: a call runs on one thread, and shared memory is refused.
 
 ## Exports
 
@@ -119,7 +140,7 @@ pub unsafe extern "C" fn dcode_render_block(
 
 ### `dcode_plugin_abi_version`
 
-Returns `1`. The manifest's `abi` field MUST be the same number.
+Returns `1`. The manifest's `abi` field MUST be the same number. The host calls this function once, in a fresh instance, as the last step of installation, and refuses the plugin if the result is not `1` or does not equal `abi`.
 
 ### `dcode_alloc`
 
@@ -242,8 +263,11 @@ These are all the functions of `wasi_snapshot_preview1`. A plugin may import any
 | `clock_time_get` | Succeeds and returns a time of 0. |
 | `args_sizes_get`, `args_get`, `environ_sizes_get`, `environ_get` | Succeed and report an empty list: no arguments, no environment variables. |
 | `proc_exit` | Ends the call immediately. It is a **plugin failure**, whatever the exit code. |
-| `fd_prestat_get`, `fd_prestat_dir_name` | Return `EBADF` (8): there are no pre-opened directories. |
-| The other 36 functions, **including the file-system ones** (`path_open`, `fd_read`, `fd_readdir`, and so on) | Return an error code that means "not available", `EBADF` (8) or `ENOSYS` (52). A plugin MUST NOT depend on which of the two it gets. They **do not trap**. |
+| Every other `fd_*` function and every `path_*` function, including the file-system ones (`path_open`, `fd_read`, `fd_readdir`, ...) and `fd_prestat_get`, `fd_prestat_dir_name` (30 functions in all) | Return `EBADF` (8). They **do not trap**. |
+| `sched_yield` | Succeeds. |
+| The remaining 7 functions (`clock_res_get`, `poll_oneoff`, `proc_raise`, `sock_accept`, `sock_recv`, `sock_send`, `sock_shutdown`) | Return `ENOSYS` (52). They **do not trap**. |
+
+`fd_prestat_get` returning `EBADF` is not incidental. wasi-libc probes pre-opened directories at start-up, from fd 3 upwards, and stops only when it gets `EBADF`; any other error code makes it abort. That is why the host answers `EBADF` there.
 
 Because no directory is pre-opened, a plugin cannot read or write any file; every attempt fails with an error code, and a program that handles errors normally keeps running. A C library built with wasi-sdk therefore installs and runs; it simply finds no files.
 
@@ -266,7 +290,7 @@ The manifest is a UTF-8 JSON object stored in **exactly one** custom section nam
 
 | Field | Required | Rule |
 | --- | --- | --- |
-| `id` | yes | Reverse-domain notation with at least one `.`. Only lowercase letters, digits, `.` and `-`; at most 64 characters. It cannot change after installation: a different `id` is a different plugin. |
+| `id` | yes | Reverse-domain notation is recommended (`io.github.example.graphviz-dot`). The rule the host enforces is the regular expression `^[a-z0-9]+([.-][a-z0-9]+)*$` and at most 64 characters: lowercase letters and digits in groups separated by single `.` or `-`. An `id` with a single group (`mydiagrams`) is accepted. It cannot change after installation: a different `id` is a different plugin. |
 | `name` | yes | A non-empty string. The name shown to users. |
 | `version` | yes | A [semantic version](https://semver.org), for example `1.2.3` or `1.2.3-beta.1`. |
 | `abi` | yes | The number `1`. It MUST equal the result of `dcode_plugin_abi_version()`. |
@@ -298,7 +322,7 @@ Plugins MUST be signed, with one exception for development.
 
 - Sign with minisign: `minisign -S -m plugin.wasm` writes `plugin.wasm.minisig`. Keep that file next to the plugin and keep the name `<file name>.wasm.minisig`. Both minisign signature types are accepted: the pre-hashed type that current minisign writes by default, and the legacy type.
 - The signature covers the **entire `.wasm` file**, so the manifest is covered too. Any change to the file, even one bit, invalidates it. Build first, then sign, and never edit a signed file.
-- The host verifies the signature with the `publicKey` in the manifest, and the signature's key id has to match that key.
+- The host verifies the signature with the `publicKey` in the manifest, and the signature's key id has to match that key. Ed25519 verification is strict RFC 8032 (no ZIP-215 leniency), the same as OpenSSL's.
 
 A valid signature proves only that the file has not been modified and that it comes from the holder of that key. **Whether the key deserves trust is decided by the person who installs the plugin.** DCode helps with trust on first use:
 
@@ -317,7 +341,7 @@ The host enforces the limits. A plugin does not declare them.
 | `.wasm` file size | 32 MiB | The plugin is refused at install time |
 | Linear memory | 256 MiB (4096 pages of 64 KiB) | `memory.grow` fails; the plugin returns `-2` or traps |
 | Time for one call, counting instantiation, the start section, `_initialize` and `dcode_render_block` | 5 s | The host terminates the call and reports that rendering timed out |
-| Source size | 1 MiB (1,048,576 bytes) | The plugin is not called; the host reports an error |
+| Source size | 1 MiB (1,048,576 bytes) | The plugin is not called; the host reports a failure |
 | Output size (`out.len`) | 8 MiB (8,388,608 bytes) | The output is discarded and reported as a plugin failure |
 | Log kept from `fd_write` | 16 KB | Excess output is not kept |
 
@@ -403,4 +427,4 @@ Go through this before you publish a plugin.
 
 ### What happens at install time
 
-`dcode plugin install` stops at the first failing step and says why: the file is within 32 MiB; the module compiles; the manifest is valid; the required exports exist and the imports are allowed; the signature is valid (skipped with `--dev`); the key matches the one remembered for this `id`; none of the languages is claimed by another installed plugin; the memory limit can be applied to the module.
+`dcode plugin install` stops at the first failing step and says why: the file is within 32 MiB; the module compiles; the manifest is valid; the required exports exist and the imports are allowed; the signature is valid (skipped with `--dev`); the key matches the one remembered for this `id`; none of the languages is claimed by another installed plugin; the memory limit can be applied to the module; finally the host instantiates the module in a worker and calls `dcode_plugin_abi_version()`, which has to return `1`.
