@@ -49,7 +49,7 @@ mkdir -p ~/.minisign
 minisign -G -p my-plugin.pub -s ~/.minisign/my-plugin.key
 ```
 
-- Put the secret key somewhere outside your project, and **back it up**. DCode remembers which key signed the first version of a plugin and refuses updates signed with any other key. If you lose the key, you cannot update that plugin.
+- Put the secret key somewhere outside your project, and **back it up**. DCode remembers which public key signed the first version of a plugin (the whole 32-byte key, not the key id that `minisign` shows) and refuses updates signed with any other key. If you lose the key, you cannot update that plugin: users would have to uninstall it and install a new one, which then remembers the new key.
 - Never commit the secret key. The `.gitignore` in this template ignores `*.key` as a second line of defence.
 - `my-plugin.pub` has two lines. Copy the **second** one (it starts with `RW`) into `publicKey` in `plugin.json`:
 
@@ -145,7 +145,7 @@ The other commands are `dcode plugin uninstall <id>`, `dcode plugin enable <id>`
 
 ## Releasing an update
 
-Raise `version` in `plugin.json`, rebuild, sign **with the same key**, and install the new file. A different key is refused.
+Raise `version` in `plugin.json`, rebuild, sign **with the same key**, and install the new file. A different key is refused, whatever the version. The one way to change a plugin's key is to ask users to uninstall it first and then install the new file.
 
 ## Before you publish
 

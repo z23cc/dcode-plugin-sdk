@@ -43,7 +43,7 @@ minisign -G -p my-plugin.pub -s ~/.minisign/my-plugin.key    # once; put the pub
 minisign -S -s ~/.minisign/my-plugin.key -m plugin.wasm       # after every build; writes plugin.wasm.minisig
 ```
 
-The public key goes in the manifest, so create the key before you build. DCode remembers the key of the first version you install and accepts updates only from the same key: keep it safe. Details are in [Signing](SPEC.md#signing).
+The public key goes in the manifest, so create the key before you build. DCode remembers the public key of the first version you install (the whole key, not just the key id) and accepts updates only from exactly that key: keep it safe. To change the key you must uninstall the plugin and install it again. Details are in [Signing](SPEC.md#signing).
 
 ## Install
 

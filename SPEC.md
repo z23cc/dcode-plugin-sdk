@@ -55,7 +55,7 @@ A plugin MUST be a WebAssembly **core module**. It MUST NOT be a component. It c
 
 ## WebAssembly features
 
-The host compiles a plugin with the WebAssembly engine of Node.js 24 (V8 13.6), with default settings and no flags. ABI 1 has no feature list of its own: a module that uses something the engine does not accept fails to compile and is **refused at install time**. The memory rules in [Module shape](#module-shape) apply on top of that.
+The host compiles a plugin with the WebAssembly engine of Node.js 24 (V8 13.6), with default settings and no flags. A module that uses something the engine does not accept fails to compile and is **refused at install time**. On top of that the host refuses the modules marked below, and the memory rules in [Module shape](#module-shape) apply.
 
 Compilation was checked on Node 24.21.0 with one small module per feature:
 
@@ -71,12 +71,12 @@ Compilation was checked on Node 24.21.0 with one small module per feature:
 | Tail calls | yes | |
 | Exception handling, `try_table`/`exnref` form | yes | The legacy `try`/`catch` form was not tested |
 | Extended constant expressions | yes | |
-| GC | yes | |
+| GC (struct, array, rec and sub types) | yes, in the engine | **Refused at install time**: the type section may contain function types only. GC objects live in the engine's own heap, not in the linear memory, so the 256 MiB limit would not apply to them |
 | Multiple memories, 64-bit memory, shared memory and atomics | yes, in the engine | **Not allowed by ABI 1**: the module must have exactly one 32-bit, non-shared memory |
 
 The first six rows are the set that current toolchains emit without being asked: Rust 1.97 for `wasm32-unknown-unknown` and wasi-sdk 34 for `wasm32-wasip1` emit nothing beyond these, and so does the Graphviz reference plugin. **A plugin SHOULD stay within the first six rows.** The engine of a future host may differ from today's.
 
-A plugin cannot use threads: a call runs on one thread, and shared memory is refused.
+A plugin cannot use threads: a call runs on one thread, and shared memory is refused. The **memory limit covers the linear memory only**; that is why anything that allocates outside it, such as GC objects, is refused.
 
 ## Exports
 
@@ -325,12 +325,14 @@ Plugins MUST be signed, with one exception for development.
 - Sign with minisign: `minisign -S -m plugin.wasm` writes `plugin.wasm.minisig`. Keep that file next to the plugin and keep the name `<file name>.wasm.minisig`. Both minisign signature types are accepted: the pre-hashed type that current minisign writes by default, and the legacy type.
 - The signature covers the **entire `.wasm` file**, so the manifest is covered too. Any change to the file, even one bit, invalidates it. Build first, then sign, and never edit a signed file.
 - The host verifies the signature with the `publicKey` in the manifest, and the signature's key id has to match that key. Ed25519 verification is strict RFC 8032 (no ZIP-215 leniency), the same as OpenSSL's.
+- A plugin is identified by its **whole public key**: the 32-byte Ed25519 key inside `publicKey`. This is what "the same key" means below. The key id is not part of the identity (see the next list).
 
 A valid signature proves only that the file has not been modified and that it comes from the holder of that key. **Whether the key deserves trust is decided by the person who installs the plugin.** DCode helps with trust on first use:
 
-- At install time DCode shows the key's **key id**. It is written the way `minisign` writes it in the comment of the `.pub` file (`untrusted comment: minisign public key: E8B20833B171CF7A`): 16 uppercase hexadecimal digits, the eight key-id bytes read as a little-endian number, so that you can compare it with what your own tools print. (The key id is also bytes 3 to 10 of the base64-decoded `publicKey`, in file order; the displayed form is those bytes reversed.)
-- After the first installation, DCode remembers that this plugin `id` belongs to this key. An update MUST be signed with the same key, or it is refused. A lost or leaked key therefore cannot be replaced for an existing plugin: back the secret key up and protect it.
-- If a plugin is uninstalled and installed again, that is a new first installation. DCode then tells the user which key the plugin used before.
+- At install time DCode shows the key's **key id** and its full public key. The key id is written the way `minisign` writes it in the comment of the `.pub` file (`untrusted comment: minisign public key: E8B20833B171CF7A`): 16 uppercase hexadecimal digits, the eight key-id bytes read as a little-endian number, so that you can compare it with what your own tools print. (The key id is bytes 3 to 10 of the base64-decoded `publicKey`, in file order; the displayed form is those bytes reversed.) **The key id is for display only.** It is eight bytes that anyone can set to any value when they build a public key of their own, so two different keys can carry the same key id. DCode never treats it as the identity of an author.
+- After the first installation, DCode remembers that this plugin `id` belongs to this **public key**. An update MUST be signed with exactly the same public key, all 32 bytes, or it is refused. A different key that carries the same key id does not count. A lost or leaked key therefore cannot be replaced for an existing plugin: back the secret key up and protect it.
+- **There is one way to change the key of a plugin: uninstall it, then install it again.** The public key of the new installation becomes the one that is remembered. Tell your users to do that if you ever have to change the key; there is no other path, and an update signed with another key is refused whatever its version number.
+- If a plugin is uninstalled and installed again, that is a new first installation. DCode then tells the user which key the plugin used before, so a changed key is visible.
 
 **Development mode.** `dcode plugin install --dev <file>.wasm` skips the signature check. The plugin is marked as a development version in the user interface. An `id` can exist only once: either as a development version or as a signed one.
 
@@ -341,7 +343,7 @@ The host enforces the limits. A plugin does not declare them.
 | Item | Limit | When exceeded |
 | --- | --- | --- |
 | `.wasm` file size | 32 MiB | The plugin is refused at install time |
-| Linear memory | 256 MiB (4096 pages of 64 KiB) | `memory.grow` fails; the plugin returns `-2` or traps |
+| Linear memory (the limit covers nothing else, which is why GC types are refused) | 256 MiB (4096 pages of 64 KiB) | `memory.grow` fails; the plugin returns `-2` or traps |
 | Time for one call, counting instantiation, the start section, `_initialize` and `dcode_render_block` | 5 s | The host terminates the call and reports that rendering timed out |
 | Source size | 1 MiB, counted in UTF-8 bytes (1,048,576) | The plugin is not called; the host reports a failure |
 | Output size (`out.len`) | 8 MiB (8,388,608 bytes) | The output is discarded and reported as a plugin failure |
@@ -372,7 +374,9 @@ On return value `0`, `out` holds one complete SVG document.
 
 - these elements: `<script>`, `<foreignObject>`, `<image>`, `<a>`, `<style>`, and the animation elements `<animate>`, `<animateMotion>`, `<animateTransform>` and `<set>`;
 - the `style` attribute on any element, and event handler attributes (`onclick`, `onload`, and so on). Use **presentation attributes** instead: `fill`, `stroke`, `stroke-width`, `stroke-dasharray`, `font-family`, `font-size`, `stop-color`, `opacity` and the like;
-- references to anything outside the document: no `href` or `xlink:href` except `#fragment` references, no `url()` except `url(#id)`, no `@import`, no `javascript:` URLs;
+- references to anything outside the document: no `href` or `xlink:href` except `#fragment` references, no `url()` except `url(#id)`, no `@import`, no `javascript:` URLs. In the attributes that can refer to a resource (`fill`, `stroke`, `mask`, `filter`, `clip-path`, `marker`, `marker-start`, `marker-mid`, `marker-end`, `cursor`, and the like) a reference to a resource is written `url(#id)` and nothing else;
+- a backslash `\` in any attribute value. A browser reads `\` in a CSS value as an escape, so `u\rl(https://example.com/)` and `\75 rl(https://example.com/)` both mean `url(https://example.com/)`. No SVG attribute needs a backslash, so none may contain one;
+- `image-set(` or `-webkit-image-set(` in any attribute value: they take an address as a string and fetch it just as `url()` does;
 - fonts other than the generic families `sans-serif`, `serif`, `monospace` and `system-ui`. There is no `@font-face` and no named font: the host cannot load one and the machine that displays the picture might not have it.
 
 **What the host does about it.** The host sanitizes every SVG before it shows it, and it **always** removes the following. A plugin MUST NOT depend on any of it:
@@ -381,9 +385,12 @@ On return value `0`, `out` holds one complete SVG document.
 | --- | --- |
 | The elements listed above | Scripts and `foreignObject` run or embed arbitrary content; `<image>` and `<a>` reach outside the document; animation can change what the picture shows after it was reviewed. `<style>` is removed because a CSS rule in it applies to the whole page, not only to your drawing, so one plugin could restyle the host's interface or another plugin's picture. |
 | The `style` attribute | The same reason: CSS in an attribute can position the picture over the host's interface (`position: fixed`), load resources (`url()`), or hide and restyle other content. Presentation attributes cannot do any of that. |
-| `href` and `xlink:href` unless the value starts with `#`; any attribute value with a `url()` that does not point at `#id` | Nothing may reach outside the document. |
+| `href` and `xlink:href` unless the value starts with `#` | Nothing may reach outside the document. |
+| In an attribute that can refer to a resource (`fill`, `stroke`, `mask`, `filter`, `clip-path`, `marker*`, `cursor`, and the like): a `url(` that is not followed by `#id)` | The same: only `url(#id)` stays; an address, a `data:` URL or an empty `url()` is a way out of the document. |
+| Any attribute value that contains a backslash | CSS escapes can spell a function name so that a text search for `url(` does not see it: `u\rl(`, `\75 rl(`. The host does not try to decode them. |
+| Any attribute value that contains `image-set(` or `-webkit-image-set(` | They load a resource from an address, like `url()`. |
 
-If nothing usable is left after sanitizing, that is, there is no `<svg>` root element, the host shows a **plugin failure**, not an empty picture.
+Where the table says an attribute, the host removes that attribute and keeps the element. If nothing usable is left after sanitizing, that is, there is no `<svg>` root element, the host shows a **plugin failure**, not an empty picture.
 
 That is a second line of defence, not permission to produce such content: **what the plugin outputs is the author's responsibility.** A picture that depends on removed content is shown broken. A common trap: a gradient whose colours are written as `<stop style="stop-color:red">` loses its colours, because the `style` attribute is removed; write `<stop stop-color="red"/>`.
 
@@ -410,7 +417,7 @@ Go through this before you publish a plugin. `tools/check-plugin.mjs` in this re
 - [ ] It exports `dcode_plugin_abi_version`, `dcode_alloc`, `dcode_free` and `dcode_render_block`, and does not export `_start`.
 - [ ] If it exports `_initialize`, the module works when `_initialize` runs once, first, and nothing else sets it up.
 - [ ] It has no imports, or only imports from the 46 names of `wasi_snapshot_preview1`. Nothing comes from `env`.
-- [ ] Only WebAssembly features listed in [WebAssembly features](#webassembly-features) are used.
+- [ ] Only WebAssembly features listed in [WebAssembly features](#webassembly-features) are used, and no GC types.
 
 **Functions**
 
@@ -428,13 +435,13 @@ Go through this before you publish a plugin. `tools/check-plugin.mjs` in this re
 
 - [ ] There is exactly one `dcode.plugin` section, and it is UTF-8 JSON with the fields in [Manifest](#manifest).
 - [ ] `id` and `languages` follow the character rules; no language is `mermaid` or `wireframe`.
-- [ ] `publicKey` is your minisign public key; the `.wasm` was signed with the matching secret key **after** its last change; `<file>.wasm.minisig` sits next to it.
+- [ ] `publicKey` is your minisign public key; the `.wasm` was signed with the matching secret key **after** its last change; `<file>.wasm.minisig` sits next to it. Your plugin's identity is that whole public key, so a later update must use the same one.
 - [ ] The secret key is backed up, and is not in version control.
 
 **Output**
 
 - [ ] The SVG is well-formed XML, with an `svg` root element in the SVG namespace, and escaped text.
-- [ ] No `<script>`, `<foreignObject>`, `<image>`, `<a>`, `<style>` or animation element; no `style` attribute and no event handler attribute; no `href` or `url()` that points outside the document. Colours and strokes are presentation attributes.
+- [ ] No `<script>`, `<foreignObject>`, `<image>`, `<a>`, `<style>` or animation element; no `style` attribute and no event handler attribute; no backslash and no `image-set(` in any attribute value; no `href` or `url()` that points outside the document, and resource references in `fill`, `stroke`, `mask`, `filter`, `clip-path`, `marker*` and `cursor` only as `url(#id)`. Colours and strokes are presentation attributes.
 - [ ] Only generic font families.
 - [ ] Both themes are drawn and readable on their surfaces; the SVG has no full-size background.
 - [ ] Ids are prefixed with something derived from the source.
