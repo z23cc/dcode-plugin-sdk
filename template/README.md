@@ -37,6 +37,7 @@ Copy this directory out of the repository, then:
 DCode only installs signed plugins (apart from [development mode](#6-install)), and the signature has to match the `publicKey` in the manifest. Create the key **before** you build, because the manifest is part of the signed file:
 
 ```sh
+mkdir -p ~/.minisign
 minisign -G -p my-plugin.pub -s ~/.minisign/my-plugin.key
 ```
 

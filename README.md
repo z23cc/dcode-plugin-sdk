@@ -25,6 +25,7 @@ In short, a plugin exports `dcode_plugin_abi_version`, `dcode_alloc`, `dcode_fre
 DCode installs only signed plugins. Signatures are [minisign](https://jedisct1.github.io/minisign/) (Ed25519) signatures:
 
 ```sh
+mkdir -p ~/.minisign
 minisign -G -p my-plugin.pub -s ~/.minisign/my-plugin.key    # once; put the public key into plugin.json
 minisign -S -s ~/.minisign/my-plugin.key -m plugin.wasm       # after every build; writes plugin.wasm.minisig
 ```
@@ -43,4 +44,4 @@ dcode plugin list
 
 ## License
 
-The SDK, the specification, the template and the plugin source in this repository are under the [MIT License](LICENSE). The built Graphviz plugin in `plugins/graphviz-dot/` contains Graphviz, which is under the Eclipse Public License 1.0; that directory carries its own license files.
+Unless a directory carries its own license files, this repository is under the [MIT License](LICENSE). The built plugin in `plugins/graphviz-dot/` contains Graphviz, which is under the Eclipse Public License 1.0; see the license files in that directory.

@@ -90,7 +90,7 @@ int32_t  dcode_render_block(const uint8_t *lang_ptr, size_t lang_len,   /* UTF-8
                             dcode_buf *out);
 ```
 
-The same signatures in Rust (`usize` is 32 bits on `wasm32`):
+The same signatures in Rust (function bodies omitted; `usize` is 32 bits on `wasm32`):
 
 ```rust
 #[repr(C)]
@@ -217,7 +217,7 @@ The stubs exist so that C and Rust toolchains that expect a WASI environment (wa
 
 ### What is refused
 
-A plugin is **refused at install time** in exactly three cases:
+An import gets a plugin **refused at install time** in exactly three cases:
 
 1. it imports anything from the module `env`;
 2. it imports from any module other than `wasi_snapshot_preview1` (including `wasi_unstable` and any `wasi:` component-model name);
