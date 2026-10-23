@@ -2,6 +2,8 @@
 
 A starting point for a DCode plugin written in Rust. The example plugin claims the code-block language `textbox` and draws the block's text inside a box. Replace `render` in `src/lib.rs` with your own code.
 
+A plugin can have two extension points: code blocks (`renderBlock`, what this template does) and file previews (`renderFile`: DCode hands the plugin a file it cannot open itself, and the plugin returns an SVG or HTML page). A file previewer has the same ABI glue and a `dcode_render_file` function with a manifest key `renderFile` instead; see [`SPEC.md`](../SPEC.md) and the C example [`plugins/sqlite-overview/`](../plugins/sqlite-overview).
+
 The contract this crate follows is in [`SPEC.md`](../SPEC.md) at the root of the repository (Plugin ABI 1). Read it once; the comments in `src/lib.rs` point to the parts that matter.
 
 What is in the crate:

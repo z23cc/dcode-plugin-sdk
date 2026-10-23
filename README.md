@@ -1,8 +1,11 @@
 # DCode plugin SDK
 
-Write plugins for DCode. A plugin is one WebAssembly file; the first extension point is the **diagram code block**: your plugin receives the source of a code block (for example a ```` ```dot ```` block) and returns an SVG picture. DCode shows the picture in chat and in documents, where it shows code blocks of the languages you declare.
+Write plugins for DCode. A plugin is one WebAssembly file with two possible extension points:
 
-A plugin cannot read files, open connections or keep data. The host gives it no capabilities at all, and the picture it returns is only displayed, never stored.
+- **diagram code blocks** (`renderBlock`): your plugin receives the source of a code block (for example a ```` ```dot ```` block) and returns an SVG picture. DCode shows the picture in chat and in documents, where it shows code blocks of the languages you declare.
+- **file previews** (`renderFile`): your plugin receives a file that DCode cannot open itself (for example a `.sqlite` database) and returns an SVG picture or a static HTML page, shown in the file's tab in the workspace. The plugin declares the extensions it handles; the formats DCode previews itself (images, PDF, Word, Markdown, Mermaid) are not open to plugins.
+
+A plugin cannot read files (a file previewer is handed the bytes of the one file it is asked about), open connections or keep data. The host gives it no capabilities at all, and what it returns is only displayed, never stored.
 
 ## What is here
 
@@ -12,14 +15,15 @@ A plugin cannot read files, open connections or keep data. The host gives it no 
 | [`template/`](template) | A Rust crate to start from: the ABI glue is done, you write the renderer. |
 | [`tools/check-plugin.mjs`](tools/check-plugin.mjs) | A checker for plugin authors: run it on your `.wasm` to see what `SPEC.md` would object to. Needs only Node 18 or newer. |
 | [`examples/svgbob/`](examples/svgbob) | A plugin that wraps an existing library ([svgbob](https://github.com/ivanceras/svgbob), ASCII art to SVG). Written by an independent author who had only this SDK, as a check that it is enough; a worked example of adapting a web-oriented library to the SVG rules and of building for `wasm32-wasip1`. |
-| [`plugins/graphviz-dot/`](plugins/graphviz-dot) | The reference plugin: Graphviz 16.1.0 compiled with wasi-sdk, renders DOT (```` ```dot ````, ```` ```graphviz ````). |
+| [`plugins/graphviz-dot/`](plugins/graphviz-dot) | The reference plugin for code blocks: Graphviz 16.1.0 compiled with wasi-sdk, renders DOT (```` ```dot ````, ```` ```graphviz ````). |
+| [`plugins/sqlite-overview/`](plugins/sqlite-overview) | The reference plugin for file previews: SQLite 3.54.1 compiled with wasi-sdk, shows the tables, the `CREATE` statements and the first rows of a `.sqlite`, `.sqlite3` or `.db` file as an HTML page. Public domain code (SQLite), MIT sources. |
 
 ## Write a plugin
 
 1. Read [`SPEC.md`](SPEC.md). The conformance checklist at the end is what a finished plugin has to satisfy.
 2. Copy [`template/`](template) and follow its [README](template/README.md). It covers the manifest, building, signing and installing.
 
-In short, a plugin exports `dcode_plugin_abi_version`, `dcode_alloc`, `dcode_free` and `dcode_render_block`, and carries a JSON manifest in a custom section named `dcode.plugin`.
+In short, a plugin exports `dcode_plugin_abi_version`, `dcode_alloc` and `dcode_free`, plus `dcode_render_block` for a code-block renderer and `dcode_render_file` for a file previewer, and carries a JSON manifest in a custom section named `dcode.plugin`. The template is a code-block renderer; for a file previewer look at [`plugins/sqlite-overview/`](plugins/sqlite-overview), which has the same ABI glue and a `dcode_render_file` (written in C).
 
 ## Check
 
@@ -29,7 +33,11 @@ Before you sign and install, run the checker on your build:
 node tools/check-plugin.mjs dist/my-plugin.wasm --dev --sample good.txt --bad-sample bad.txt --out preview
 ```
 
-`--sample` is a source file in your plugin's language that must render and `--bad-sample` one with a mistake that must return `1` with a message; both can be repeated. The checker needs nothing but Node 18 or newer. It reads the module and the manifest, verifies the signature (leave out `--dev` once the plugin is signed), calls the plugin the way the host does (a fresh instance per call, the 256 MiB memory maximum, the 5 s limit, no WASI capabilities), and reports `PASS`, `WARN` or `FAIL` for each point of the [conformance checklist](SPEC.md#conformance-checklist) it can test: the exports and imports, the manifest, return codes and the `out` record, option handling, determinism, odd and huge inputs, and the SVG (well-formed XML, nothing the host would remove, ids, fonts). `--out` writes every picture, light and dark, and an `index.html` to look at. It is a tool, not a test suite, and it cannot tell whether your pictures are right.
+`--sample` is a source file in your plugin's language that must render and `--bad-sample` one with a mistake that must return `1` with a message; both can be repeated. For a file previewer the same two exist as `--file-sample` (a file the plugin must preview) and `--bad-file-sample` (for example a `.db` that is not a database, which must return `1` with a message):
+
+```sh
+node tools/check-plugin.mjs dist/my-previewer.wasm --dev --file-sample good.db --bad-file-sample notadb.db --out preview
+``` The checker needs nothing but Node 18 or newer. It reads the module and the manifest, verifies the signature (leave out `--dev` once the plugin is signed), calls the plugin the way the host does (a fresh instance per call, the 256 MiB memory maximum, the 5 s limit, no WASI capabilities), and reports `PASS`, `WARN` or `FAIL` for each point of the [conformance checklist](SPEC.md#conformance-checklist) it can test: the exports and imports, the manifest, return codes and the `out` record, option handling, determinism, odd and huge inputs, and the SVG (well-formed XML, nothing the host would remove, ids, fonts) or, for a file previewer, the HTML page (nothing the viewer would remove, and 32 MiB files and damaged copies of your samples answered with a result, not a trap). `--out` writes every picture or page, light and dark, and an `index.html` to look at. It is a tool, not a test suite, and it cannot tell whether your pictures are right.
 
 If you wrap an existing rendering library, expect to adapt its output: most produce SVG for a web page, with `<style>` blocks, CSS classes, named fonts, a background rectangle and ids that would clash when several pictures share a page. None of that is allowed ([SVG output](SPEC.md#svg-output)); turn it off if the library lets you, translate the rest to presentation attributes, and prefix the ids. [`examples/svgbob`](examples/svgbob) is a worked example. If a dependency pulls in `wasm-bindgen`, build for `wasm32-wasip1` ([Imports and WASI](SPEC.md#imports-and-wasi)).
 
@@ -57,4 +65,4 @@ dcode plugin list
 
 ## License
 
-This repository is under the [MIT License](LICENSE), with one exception: the **built** plugin `graphviz-dot.wasm` from `plugins/graphviz-dot/` contains Graphviz and is covered by the Eclipse Public License 2.0. See [`plugins/graphviz-dot/NOTICE.md`](plugins/graphviz-dot/NOTICE.md) and [`LICENSE-EPL-2.0.txt`](plugins/graphviz-dot/LICENSE-EPL-2.0.txt) there. The sources written for that plugin are MIT.
+This repository is under the [MIT License](LICENSE), with one exception: the **built** plugin `graphviz-dot.wasm` from `plugins/graphviz-dot/` contains Graphviz and is covered by the Eclipse Public License 2.0. See [`plugins/graphviz-dot/NOTICE.md`](plugins/graphviz-dot/NOTICE.md) and [`LICENSE-EPL-2.0.txt`](plugins/graphviz-dot/LICENSE-EPL-2.0.txt) there. The sources written for that plugin are MIT. The plugin `sqlite-overview.wasm` contains SQLite, which is in the public domain; its sources are MIT too (see [`plugins/sqlite-overview/NOTICE.md`](plugins/sqlite-overview/NOTICE.md)).

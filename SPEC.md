@@ -1,6 +1,6 @@
 # DCode Plugin ABI 1
 
-**Plugin ABI 1** is the contract between a DCode plugin and the DCode host. A plugin is a single WebAssembly file; the host loads it, asks it to turn code blocks into pictures, and gives it nothing else.
+**Plugin ABI 1** is the contract between a DCode plugin and the DCode host. A plugin is a single WebAssembly file; the host loads it, asks it to turn code blocks into pictures or to preview a file, and gives it nothing else.
 
 **This document is normative.** If the README, the template, a plugin or a host implementation disagrees with it, this document is the reference and the other one has a bug. It is written so that you can build a plugin from it alone, without knowing how DCode is implemented.
 
@@ -14,6 +14,7 @@ The words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119.
 - [Exports](#exports)
 - [`dcode_buf`](#dcode_buf)
 - [`dcode_render_block` and return values](#dcode_render_block-and-return-values)
+- [`dcode_render_file` and return values](#dcode_render_file-and-return-values)
 - [Options](#options)
 - [Imports and WASI](#imports-and-wasi)
 - [Manifest](#manifest)
@@ -21,6 +22,7 @@ The words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119.
 - [Limits](#limits)
 - [State and re-entrancy](#state-and-re-entrancy)
 - [SVG output](#svg-output)
+- [HTML output](#html-output)
 - [Versioning](#versioning)
 - [Conformance checklist](#conformance-checklist)
 
@@ -31,11 +33,14 @@ A plugin is:
 - one `.wasm` file, a WebAssembly core module, which carries its own manifest in a custom section named `dcode.plugin`;
 - next to it, a `.minisig` signature file made with [minisign](https://jedisct1.github.io/minisign/).
 
-Plugin ABI 1 has one extension point, the **block renderer**. The manifest lists the code-block languages the plugin handles (for example `dot`). When DCode shows a code block in one of those languages (in a chat message, or in a document in the viewer or the editor), it calls the plugin with the block's source and gets back an SVG picture, or an error message for the person who wrote the block.
+Plugin ABI 1 has two extension points. A plugin implements at least one of them, and says which in its manifest:
+
+- the **block renderer** (`renderBlock`). The manifest lists the code-block languages the plugin handles (for example `dot`). When DCode shows a code block in one of those languages (in a chat message, or in a document in the viewer or the editor), it calls the plugin with the block's source and gets back an SVG picture, or an error message for the person who wrote the block.
+- the **file previewer** (`renderFile`). The manifest lists file extensions (for example `.sqlite`). When a person opens a file with one of those extensions in a workspace, and DCode has no preview of its own for that format, it calls the plugin with the file's name and bytes and gets back an SVG picture or an HTML page, or a message about why the file cannot be shown.
 
 Three properties of the platform shape everything below:
 
-- **The host gives plugins no capabilities.** A plugin has no files, no network, no real clock and no environment. The only things it can do are compute and return text. A plugin that tries to import anything else is refused at install time.
+- **The host gives plugins no capabilities.** A plugin has no files, no network, no real clock and no environment. The only things it can do are compute and return text. (A file previewer is *given* the bytes of one file as an argument; it cannot open any file.) A plugin that tries to import anything else is refused at install time.
 - **Plugins only affect display.** What DCode stores is the plain code block. A plugin's output is shown, cached and thrown away; it is never written into a document. When a plugin is missing, disabled or removed, the block is shown as ordinary code and nothing breaks.
 - **Every call is independent.** The host creates a fresh instance of the module for each call and discards it afterwards.
 
@@ -80,15 +85,18 @@ A plugin cannot use threads: a call runs on one thread, and shared memory is ref
 
 ## Exports
 
-A plugin MUST export these four functions and the memory:
+A plugin MUST export the memory and the first three functions below, and the render function of each extension point its [manifest](#manifest) declares:
 
-| Export | Kind | WebAssembly type |
-| --- | --- | --- |
-| `memory` | memory | one 32-bit linear memory |
-| `dcode_plugin_abi_version` | function | `() -> i32` |
-| `dcode_alloc` | function | `(i32) -> i32` |
-| `dcode_free` | function | `(i32, i32) -> ()` |
-| `dcode_render_block` | function | `(i32, i32, i32, i32, i32, i32, i32) -> i32` |
+| Export | Kind | WebAssembly type | Required |
+| --- | --- | --- | --- |
+| `memory` | memory | one 32-bit linear memory | always |
+| `dcode_plugin_abi_version` | function | `() -> i32` | always |
+| `dcode_alloc` | function | `(i32) -> i32` | always |
+| `dcode_free` | function | `(i32, i32) -> ()` | always |
+| `dcode_render_block` | function | `(i32, i32, i32, i32, i32, i32, i32) -> i32` | when the manifest has `renderBlock` |
+| `dcode_render_file` | function | `(i32, i32, i32, i32, i32, i32, i32) -> i32` | when the manifest has `renderFile` |
+
+The host ignores a render function the manifest does not declare, with one exception: if the module exports `dcode_render_file`, it MUST take exactly 7 parameters, declared or not. The host reads the parameter count when it installs the plugin and on every call, and any other count is a failure.
 
 The signatures in C. On `wasm32`, pointers and `size_t` are 32 bits wide, and the WebAssembly types above follow from that.
 
@@ -109,6 +117,11 @@ int32_t  dcode_render_block(const uint8_t *lang_ptr, size_t lang_len,   /* UTF-8
                             const uint8_t *src_ptr,  size_t src_len,    /* UTF-8 */
                             const uint8_t *opts_ptr, size_t opts_len,   /* UTF-8 JSON */
                             dcode_buf *out);
+
+int32_t  dcode_render_file(const uint8_t *name_ptr, size_t name_len,    /* UTF-8, no path */
+                           const uint8_t *data_ptr, size_t data_len,    /* any bytes */
+                           const uint8_t *opts_ptr, size_t opts_len,    /* UTF-8 JSON */
+                           dcode_buf *out);
 ```
 
 The same signatures in Rust (function bodies omitted; `usize` is 32 bits on `wasm32`):
@@ -136,6 +149,14 @@ pub unsafe extern "C" fn dcode_render_block(
     opts_ptr: *const u8, opts_len: usize,
     out: *mut DcodeBuf,
 ) -> i32;
+
+#[no_mangle]
+pub unsafe extern "C" fn dcode_render_file(
+    name_ptr: *const u8, name_len: usize,
+    data_ptr: *const u8, data_len: usize,
+    opts_ptr: *const u8, opts_len: usize,
+    out: *mut DcodeBuf,
+) -> i32;
 ```
 
 ### `dcode_plugin_abi_version`
@@ -144,9 +165,9 @@ Returns `1`. The manifest's `abi` field MUST be the same number. The host calls 
 
 ### `dcode_alloc`
 
-Returns a pointer to `len` writable bytes in the plugin's memory, or null when the memory cannot be allocated. The host uses it to place the inputs of `dcode_render_block` in the plugin's memory.
+Returns a pointer to `len` writable bytes in the plugin's memory, or null when the memory cannot be allocated. The host uses it to place the inputs of `dcode_render_block` and `dcode_render_file` in the plugin's memory.
 
-- For `len == 0` it MUST return a **non-null** pointer. Null always means failure.
+- For `len == 0` it MUST return a **non-null** pointer. Null always means failure. (An empty file is passed to a file previewer, and the host allocates its zero bytes like any other input.)
 - The pointer needs no alignment beyond 1 byte.
 
 ### `dcode_free`
@@ -154,7 +175,7 @@ Returns a pointer to `len` writable bytes in the plugin's memory, or null when t
 `dcode_free(ptr, len)` releases memory. It MUST be able to release:
 
 - memory returned by `dcode_alloc(len)`; and
-- the buffer that `dcode_render_block` left in `out` (see [`dcode_buf`](#dcode_buf)).
+- the buffer that `dcode_render_block` or `dcode_render_file` left in `out` (see [`dcode_buf`](#dcode_buf)).
 
 In both cases `len` is exactly the length the memory was created with. `dcode_free(ptr, 0)` MUST be harmless. The plugin may therefore use any allocator, as long as it can free by `(ptr, len)`.
 
@@ -167,7 +188,7 @@ In both cases `len` is exactly the length the memory was created with. `dcode_fr
 | 0 | 4 | `ptr`: address of the first byte in the plugin's memory |
 | 4 | 4 | `len`: length in bytes |
 
-- The `out` argument of `dcode_render_block` points to such a record. **Its address has no alignment guarantee**, so the plugin MUST write it with unaligned stores (in Rust, `ptr::write_unaligned`).
+- The `out` argument of `dcode_render_block` and of `dcode_render_file` points to such a record. **Its address has no alignment guarantee**, so the plugin MUST write it with unaligned stores (in Rust, `ptr::write_unaligned`).
 - The plugin allocates the bytes `ptr` points to. After reading them the host calls `dcode_free(ptr, len)`. The buffer MUST therefore be freeable with exactly that pair: `len` MUST be the size of the allocation, not the size of the part that is used. A Rust `Vec` with spare capacity does not qualify; a boxed slice does.
 - A buffer of length 0 is allowed; its pointer MUST be non-null.
 
@@ -214,9 +235,45 @@ The plugin does not report these and cannot influence the message:
 - running over the time limit or the output limit (see [Limits](#limits));
 - running out of memory in a way that traps instead of returning `-2`, which is what a library that allocates infallibly does.
 
+## `dcode_render_file` and return values
+
+*Since DCode **[version to be filled in when this ships]**. Older versions do not know `renderFile`; see [Manifest](#manifest) for how they treat such a plugin.*
+
+```c
+int32_t dcode_render_file(name, data, opts, out);
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `name_ptr`, `name_len` | The name of the file the person opened, UTF-8: the last part of its path, **never a directory**. Its case is as it is on disk (`Data.DB` arrives as `Data.DB`), and it can hold spaces, markup characters and any Unicode. It is text taken from outside: escape it like any other text from the file. |
+| `data_ptr`, `data_len` | The whole file, **any bytes**: not necessarily UTF-8, and possibly none at all (an empty file is passed too). At most 32 MiB (33,554,432 bytes); a larger file is never read and the plugin is not called. |
+| `opts_ptr`, `opts_len` | The options, a UTF-8 JSON object, the same as for `dcode_render_block`. See [Options](#options). |
+| `out` | Where to put the result: a [`dcode_buf`](#dcode_buf). |
+
+The three inputs are owned by the host: the plugin MUST NOT free them or keep pointers to them after returning. The host calls the function the same way as `dcode_render_block` (a fresh instance, `_initialize`, `dcode_alloc` and a copy for each input, the call, `dcode_free` on the result and on the inputs). The file lives in the plugin's linear memory for the whole call: a 32 MiB file takes 32 MiB of the 256 MiB, and a plugin that copies it or builds large structures from it has less than it may think. The plugin cannot read a part of a file later; it has all of it, or nothing.
+
+### Return values
+
+| Value | Meaning | What `out` holds |
+| --- | --- | --- |
+| `0` | Success: a picture | A complete SVG document, UTF-8. See [SVG output](#svg-output). |
+| `2` | Success: an HTML page | UTF-8 HTML, a complete document or only what belongs in `<body>`. See [HTML output](#html-output). **Only `dcode_render_file` can return `2`**: if `dcode_render_block` returns it, the host treats the call as a plugin failure, because a code block is only ever drawn from SVG. |
+| `1` | The file is not something the plugin can show: not in the format its extension says, damaged, encrypted, unsupported | A message for the person who opened the file: UTF-8 plain text, no markup, **not empty**. DCode shows it in place of the preview. If the message is empty, the host shows a fixed sentence instead. |
+| `-1` | An argument is invalid | Not written |
+| `-2` | Out of memory | Not written |
+
+Details:
+
+- **Return `1`, not a trap, for any file a person can open.** A file with the right extension and the wrong content, a damaged file, an encrypted one, an empty one and a truncated one are all ordinary. `1` is shown as "this file cannot be previewed, and why"; a trap is shown as a broken plugin.
+- Return `-1` when `name` is not valid UTF-8, when `opts` is not valid UTF-8 JSON or is not a JSON object, or when `out` is null. **`data` is never invalid**: whatever its bytes, the answer is `0`, `1` or `2`. The host never sends the arguments that give `-1`; the code exists so that a plugin can be checked by hand.
+- `-2` and a trap from running out of memory are as for [`dcode_render_block`](#dcode_render_block-and-return-values): the plugin returns `-2` only where it notices the failure, and on `-1` and `-2` it MUST NOT write `out`. Both are plugin failures.
+- The result for `0`, `1` and `2` SHOULD be a pure function of `(name, data, opts)`. The host caches by the file's identity (path, size, modification time) and the theme, not by content, so output that varies with anything else only confuses.
+- **Show a start, not everything.** The output is limited to 8 MiB and the call to 5 s, and a person looks at a preview for a moment. A previewer SHOULD show the beginning of a big file (the first rows of a table, the first screen of a log), say that it is a part, and stop adding content before the output limit rather than run into it. Never do work whose cost grows with the whole file when a part is enough: an unbounded `COUNT(*)` on a 30 MiB database is such a thing.
+- Everything in [Failures the host reports itself](#failures-the-host-reports-itself) applies here too.
+
 ## Options
 
-`opts` is a UTF-8 JSON **object**. Version 1 of the ABI defines one field:
+`opts` is a UTF-8 JSON **object**, the same for both render functions. Version 1 of the ABI defines one field:
 
 ```json
 { "theme": "light" }
@@ -290,6 +347,19 @@ The manifest is a UTF-8 JSON object stored in **exactly one** custom section nam
 }
 ```
 
+A file previewer declares `renderFile` instead of, or as well as, `renderBlock`:
+
+```json
+{
+  "id": "io.github.example.sqlite-overview",
+  "name": "SQLite overview",
+  "version": "1.0.0",
+  "abi": 1,
+  "publicKey": "RWRc97Nm84XTJv7qi9b3TruYb7D1/cjylG9RkrdC11jlLC7X0svsnlYC",
+  "renderFile": { "extensions": [".sqlite", ".sqlite3", ".db"] }
+}
+```
+
 | Field | Required | Rule |
 | --- | --- | --- |
 | `id` | yes | Reverse-domain notation is recommended (`io.github.example.graphviz-dot`). The rule the host enforces is the regular expression `^[a-z0-9]+([.-][a-z0-9]+)*$` and at most 64 characters: lowercase letters and digits in groups separated by single `.` or `-`. An `id` with a single group (`mydiagrams`) is accepted. It cannot change after installation: a different `id` is a different plugin. |
@@ -299,13 +369,19 @@ The manifest is a UTF-8 JSON object stored in **exactly one** custom section nam
 | `description` | no | A string, one sentence of what the plugin does. |
 | `homepage` | no | A string, the address of the plugin's home page. Information for humans only. |
 | `publicKey` | yes | The author's minisign public key: the base64 string on the second line of the `.pub` file (it starts with `RW`). The signature is checked with this key. |
-| `renderBlock` | yes (ABI 1 has no other extension point) | An object with the key `languages`. |
-| `renderBlock.languages` | yes | An array of 1 to 16 strings. Each uses only lowercase letters, digits, `+` and `-`. `mermaid` and `wireframe` may be claimed too: DCode draws them itself, and an enabled plugin that declares one draws it instead. |
+| `renderBlock` | one of `renderBlock` and `renderFile`, at least | An object with the key `languages`. |
+| `renderBlock.languages` | yes, with `renderBlock` | An array of 1 to 16 strings. Each uses only lowercase letters, digits, `+` and `-`. `mermaid` and `wireframe` may be claimed too: DCode draws them itself, and an enabled plugin that declares one draws it instead. |
+| `renderFile` | one of `renderBlock` and `renderFile`, at least | An object with the key `extensions`. |
+| `renderFile.extensions` | yes, with `renderFile` | An array of 1 to 16 strings, no duplicates. Each is a dot and then lowercase letters, digits, `+` and `-` (`^\.[a-z0-9][a-z0-9+-]*$`), at most 16 characters long: `.sqlite`. It names the end of the file name, so for `archive.tar.gz` only `.gz` counts. The host lowers the case of a file's extension before it looks for a plugin, so `.DB` reaches a plugin that declared `.db`. |
 
 Further rules:
 
 - Keys the host does not know are ignored.
+- **A plugin declares `renderBlock`, `renderFile` or both.** A manifest with neither is refused (`manifest-invalid`). The exports the module must have follow from the manifest ([Exports](#exports)).
 - **A language can belong to only one installed plugin.** Installing a plugin that declares a language already claimed by another installed plugin is refused. The user has to remove the other one first.
+- **A file extension can belong to only one installed plugin**, in the same way: the plugin installed later is refused (`extension-taken`).
+- **A plugin cannot declare a format DCode previews itself:** `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.pdf`, `.docx`, `.md`, `.markdown`, `.mmd` and `.mermaid`. Such a manifest is refused (`extension-builtin`). A previewer would receive every file of that kind that the person opens, so the platform lets a plugin fill a gap and never replace a preview that exists. (That is deliberately different from languages: a plugin may take over `mermaid` or `wireframe` blocks.) `.dot` and `.gv` are not on the list, because DCode cannot draw DOT by itself. The list belongs to DCode and later versions may add formats to it; `tools/check-plugin.mjs` carries a copy.
+- **Older DCode versions.** A version from before `renderFile` ([`dcode_render_file`](#dcode_render_file-and-return-values) says since when) requires `renderBlock`. It refuses a plugin that declares only `renderFile` (`manifest-invalid`), and it installs a plugin that declares both and ignores `renderFile`, as it ignores any key it does not know.
 - The manifest is part of the signed file, so a change to it needs a new signature.
 
 **Embedding the manifest.** In Rust, keep it in a `plugin.json` file next to `Cargo.toml` and include it in the module (this is what `template/` does):
@@ -345,11 +421,12 @@ The host enforces the limits. A plugin does not declare them.
 | `.wasm` file size | 32 MiB | The plugin is refused at install time |
 | Linear memory (the limit covers nothing else, which is why GC types are refused) | 256 MiB (4096 pages of 64 KiB) | `memory.grow` fails; the plugin returns `-2` or traps |
 | Time for one call, counting instantiation, the start section, `_initialize` and `dcode_render_block` | 5 s | The host terminates the call and reports that rendering timed out |
-| Source size | 1 MiB, counted in UTF-8 bytes (1,048,576) | The plugin is not called; the host reports a failure |
-| Output size (`out.len`) | 8 MiB (8,388,608 bytes) | The output is discarded and reported as a plugin failure |
+| Source size (`renderBlock`) | 1 MiB, counted in UTF-8 bytes (1,048,576) | The plugin is not called; the host reports a failure |
+| File size (`renderFile`) | 32 MiB (33,554,432 bytes) | The file is not read and the plugin is not called; the person is told that the file is too large to preview |
+| Output size (`out.len`), for both render functions | 8 MiB (8,388,608 bytes) | The output is discarded and reported as a plugin failure |
 | Log kept from `fd_write` | 16 KB, the first 16 KB | The rest is dropped; the log is kept only for `--dev` plugins (see [Imports and WASI](#imports-and-wasi)) |
 
-**The source limit is a transport limit.** The host accepts 1 MiB of source; that does not mean a plugin can render 1 MiB of source in 5 s and 256 MiB. A plugin SHOULD set its own, smaller limits (on bytes, lines, line length or on whatever drives its cost) and return `1` with a message that says which limit was exceeded and what to do ("split the diagram"), instead of running into the time limit.
+**The source limit is a transport limit.** The host accepts 1 MiB of source; that does not mean a plugin can render 1 MiB of source in 5 s and 256 MiB. A plugin SHOULD set its own, smaller limits (on bytes, lines, line length or on whatever drives its cost) and return `1` with a message that says which limit was exceeded and what to do ("split the diagram"), instead of running into the time limit. The same goes for the file limit: a file previewer gets up to 32 MiB, sitting in its own memory, and SHOULD preview a start of it instead of working through all of it.
 
 About the memory limit: before compiling a module the host rewrites its memory section so that the maximum is 256 MiB. If the module declares a smaller maximum, the smaller one stays. The file on disk is not changed, so the signature stays valid. A module whose *initial* memory is already larger than the limit cannot be installed. A module needs no declared maximum of its own, but it is useful to declare the same one: then a plugin that you run outside the host fails where it would fail inside. For Rust, add `-C link-arg=--max-memory=268435456` to the rustflags (the template does); with wasi-sdk, link with `-Wl,--max-memory=268435456`.
 
@@ -361,7 +438,7 @@ About the memory limit: before compiling a module the host rewrites its memory s
 
 ## SVG output
 
-On return value `0`, `out` holds one complete SVG document.
+On return value `0`, of either render function, `out` holds one complete SVG document.
 
 **Format**
 
@@ -399,11 +476,32 @@ That is a second line of defence, not permission to produce such content: **what
 - Give every element `id` a prefix that tells your picture from every **other** picture on the page: your plugin's own prefix plus a hash of the source text and `theme` (for example `bob-3a1c9e4d7b2f6a10-arrow`). Two blocks with exactly the same source and theme then get exactly the same ids, and that is fine: the elements behind those ids are identical too, so it does not matter which of them a reference reaches. What must not happen is that two **different** pictures share an id. So do not use a fixed prefix, a counter that restarts for every call, or the ids of the library you call, unprefixed.
 - Do not use `<style>` blocks or `style` attributes. The host removes them (see above), and they would leak into other pictures if it did not.
 
+## HTML output
+
+On return value `2` of `dcode_render_file`, `out` holds an HTML page. DCode never runs it: it shows it as a static page, with the precautions below. A code block never gets HTML; `dcode_render_block` returns SVG only.
+
+**Why so strict.** A file previewer reads the person's file, and the only way out of the plugin is its output. So DCode treats the HTML as untrusted, and shows it in a way that cannot send anything anywhere, whatever the plugin writes.
+
+**Format**
+
+- UTF-8 HTML: a complete document, or only what belongs in `<body>`. Use headings, paragraphs, lists, tables, `<pre>` and plain text. A `<style>` element in `<head>`, or a `style` attribute, sets colours, borders, fonts and layout.
+- Text taken from the file (its name, its content) MUST be escaped: `&`, `<` and `>` in text, and also `"` and `'` in attribute values. Characters that HTML does not allow (control characters other than tab, line feed and carriage return) SHOULD be removed or replaced.
+- The page SHOULD NOT paint a background over its whole area; the viewer draws the surface that matches `theme`. Choose colours that read well on a light surface when `theme` is `"light"`, and light text and borders on a dark one when `theme` is `"dark"`. Use generic font families (`sans-serif`, `serif`, `monospace`, `system-ui`, `ui-monospace`); the host cannot load a named font.
+- Keep it static and self-contained: no script, no link that must be followed, no image or font from outside. An image or font can be embedded as a `data:` URL; it counts toward the 8 MiB.
+
+**What the viewer does with it**
+
+1. **It builds the document itself.** From the plugin's page it takes the content of `<body>` and the `<style>` elements of `<head>`; everything else in the page (`<title>`, `<meta>`, ...) is dropped. It puts that into its own document, under the policy `Content-Security-Policy: default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'`. Under it no request of any kind can be made, whatever the markup says: images and fonts load only from `data:` URLs.
+2. **It sanitizes the markup.** It removes these elements together with their content: `script`, `link`, `meta`, `base`, `form`, `iframe`, `frame`, `object`, `embed`, `portal`. It removes these attributes: `href`, `xlink:href`, `ping`, `action`, `formaction`, `srcset`, `background`, and every event handler (`onclick`, `onload`, ...). `src`, `poster` and the like are kept only when the value is a `data:` URL. Links therefore are plain text and cannot be followed. `<style>` elements and `style` attributes are kept; a `url(...)` or `@import` in them that is not a `data:` URL loads nothing.
+3. **It shows the result in a frame with `sandbox=""`**, with no `allow-*` token and `referrerpolicy="no-referrer"`: no script, no navigation, no forms, no pop-ups, and the page has an origin of its own. The frame fills the viewer's tab and scrolls inside, so the page does not report its height and needs no script for it.
+
+That is a second line of defence, not permission to produce such content: **what the plugin outputs is the author's responsibility**, and a page that depends on removed content is shown without it (a table of links shows the link texts and nothing to click). `tools/check-plugin.mjs` reports the elements, attributes and URLs the viewer would remove.
+
 ## Versioning
 
 - There are two version numbers, and they are independent. `abi` is the version of this contract; `version` is the plugin's own.
 - The host supports **one ABI major version at a time**. A plugin whose `abi` the host does not support is refused. There is no compatibility layer.
-- **A new extension point is a new export function plus a new key in the manifest.** It does not change the ABI major version, and plugins that were built before it keep working. In ABI 1, `renderBlock` and `dcode_render_block` are required because they are the only extension point.
+- **A new extension point is a new export function plus a new key in the manifest.** It does not change the ABI major version, and plugins that were built before it keep working. `renderFile` and `dcode_render_file` were added this way, after `renderBlock`; a plugin needs at least one extension point, and only the render functions its manifest declares.
 - Within ABI 1, the options object only gains optional fields.
 - The version moves to ABI 2 only when an export is removed, or when the signature or the meaning of an existing export changes. Plugins then have to be rebuilt against the new document.
 
@@ -414,7 +512,7 @@ Go through this before you publish a plugin. `tools/check-plugin.mjs` in this re
 **Module**
 
 - [ ] It is a core module with one `memory`, defined in the module and exported, 32-bit, not shared. The initial size is at most 256 MiB.
-- [ ] It exports `dcode_plugin_abi_version`, `dcode_alloc`, `dcode_free` and `dcode_render_block`, and does not export `_start`.
+- [ ] It exports `dcode_plugin_abi_version`, `dcode_alloc` and `dcode_free`, the render function of each extension point its manifest declares (`dcode_render_block` for `renderBlock`, `dcode_render_file` for `renderFile`), and does not export `_start`. If it exports `dcode_render_file`, that function takes exactly 7 parameters.
 - [ ] If it exports `_initialize`, the module works when `_initialize` runs once, first, and nothing else sets it up.
 - [ ] It has no imports, or only imports from the 46 names of `wasi_snapshot_preview1`. Nothing comes from `env`.
 - [ ] Only WebAssembly features listed in [WebAssembly features](#webassembly-features) are used, and no GC types.
@@ -431,10 +529,20 @@ Go through this before you publish a plugin. `tools/check-plugin.mjs` in this re
 - [ ] No input the user can type makes it trap or hang: wrong syntax returns `1` with a message that names the line and the problem. Try empty input, random bytes, very long lines, and a 1 MiB source.
 - [ ] Equal inputs give equal output, and nothing is kept between calls.
 
+**File previewer** (`renderFile`)
+
+- [ ] `dcode_render_file` returns `0` (SVG), `2` (HTML), `1` (with a message), `-1` or `-2` exactly as the table says, and writes `out` (with an unaligned store) only on `0`, `1` and `2`. `dcode_render_block` never returns `2`.
+- [ ] `name` that is not valid UTF-8, and `opts` that is not a JSON object, give `-1`. `data` is never invalid.
+- [ ] Any bytes give `0`, `1` or `2` and never a trap or a hang: an empty file, one byte, random bytes, a damaged copy of a real file, a file with the right extension and the wrong content, 32 MiB of anything. The last finishes within 5 s and 256 MiB and gives at most 8 MiB of output.
+- [ ] A file that is not in the format returns `1` with a message that says so.
+- [ ] The file name and every text from the file are escaped in the output. The preview shows a start of a big file and says that it is a part.
+- [ ] The HTML has nothing the viewer removes: no `<script>`, `<link>`, `<meta>`, `<base>`, `<form>`, `<iframe>`, `<object>`, `<embed>`; no `href`, `ping`, `action`, `srcset` or event handler attribute; `src` only as a `data:` URL. Both themes are drawn and readable.
+- [ ] It does not change the inputs, and equal inputs give equal output.
+
 **Manifest and signature**
 
-- [ ] There is exactly one `dcode.plugin` section, and it is UTF-8 JSON with the fields in [Manifest](#manifest).
-- [ ] `id` and `languages` follow the character rules. If a language is `mermaid` or `wireframe`, you mean to replace DCode's own drawing of it.
+- [ ] There is exactly one `dcode.plugin` section, and it is UTF-8 JSON with the fields in [Manifest](#manifest), and at least one of `renderBlock` and `renderFile`.
+- [ ] `id`, `languages` and `extensions` follow the character rules. If a language is `mermaid` or `wireframe`, you mean to replace DCode's own drawing of it. No extension is one of the formats DCode previews itself.
 - [ ] `publicKey` is your minisign public key; the `.wasm` was signed with the matching secret key **after** its last change; `<file>.wasm.minisig` sits next to it. Your plugin's identity is that whole public key, so a later update must use the same one.
 - [ ] The secret key is backed up, and is not in version control.
 
@@ -449,4 +557,4 @@ Go through this before you publish a plugin. `tools/check-plugin.mjs` in this re
 
 ### What happens at install time
 
-`dcode plugin install` stops at the first failing step and says why: the file is within 32 MiB; the module compiles; the manifest is valid; the required exports exist and the imports are allowed; the signature is valid (skipped with `--dev`); the key matches the one remembered for this `id`; none of the languages is claimed by another installed plugin; the memory limit can be applied to the module; finally the host instantiates the module in a worker and calls `dcode_plugin_abi_version()`, which has to return `1`.
+`dcode plugin install` stops at the first failing step and says why: the file is within 32 MiB; the module compiles; the manifest is valid, with at least one extension point, and none of its extensions is a format DCode previews itself; the exports the manifest calls for exist (`dcode_render_file` with 7 parameters) and the imports are allowed; the signature is valid (skipped with `--dev`); the key matches the one remembered for this `id`; none of the languages or extensions is claimed by another installed plugin; the memory limit can be applied to the module; finally the host instantiates the module in a worker and calls `dcode_plugin_abi_version()`, which has to return `1`.
