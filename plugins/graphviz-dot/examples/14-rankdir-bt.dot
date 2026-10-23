@@ -1,4 +1,4 @@
-// rankdir=BT and RL are not implemented by layout-rs (it treats them as TB).
+// rankdir=BT draws the graph bottom to top.
 digraph G {
   rankdir=BT;
   leaf1 -> parent;

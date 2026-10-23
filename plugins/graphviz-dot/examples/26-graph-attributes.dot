@@ -1,4 +1,4 @@
-// Graph-level attributes layout-rs ignores: bgcolor, nodesep, ranksep, splines, rank=same.
+// Graph-level attributes: bgcolor, nodesep, ranksep, splines, rank=same.
 digraph G {
   bgcolor=lightyellow;
   nodesep=1.0;

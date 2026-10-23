@@ -21,7 +21,7 @@ dcode plugin install --dev graphviz-dot.wasm    # a build you made yourself, uns
 - **Clusters, records, ports, `rank=same`, `rankdir`, `splines` (including `ortho`), edge labels, the full set of shapes and arrowheads** work as in Graphviz.
 - **Syntax errors** return `1` with Graphviz's message, for example `syntax error in line 4 near ';'`. Graphviz reports where it noticed the problem, which can be a line after the mistake (an unclosed `[` or string, a missing `}` at the end of the input).
 - **Ids** in the SVG are prefixed with a hash of the source and theme, so several diagrams can share a page.
-- Graphviz warnings (unknown shape, unknown arrow type, ...) go to the plugin log (`fd_write` to stderr), not to the user.
+- Graphviz warnings (unknown shape, unknown arrow type, ...) are written to stderr, which is the plugin log (see `fd_write` in [SPEC.md](../../SPEC.md)): the host keeps it for development builds only. The user never sees them.
 
 ## What it does not do
 

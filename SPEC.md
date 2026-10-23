@@ -179,8 +179,8 @@ int32_t dcode_render_block(lang, src, opts, out);
 
 | Argument | Meaning |
 | --- | --- |
-| `lang_ptr`, `lang_len` | The language of the code block, UTF-8. It is one of the languages the plugin declared in its manifest. A plugin that declares more than one can use it to tell them apart. |
-| `src_ptr`, `src_len` | The source text of the block: the text between the fences, UTF-8, at most 1 MiB. Lines may end in `\n` or `\r\n`. |
+| `lang_ptr`, `lang_len` | The language of the code block, UTF-8: **exactly one of the lowercase strings the plugin declared in its manifest**. The host matches languages case-insensitively by converting the block's language to lower case before it looks for a plugin, so a block fenced as `DOT` or `Dot` reaches a plugin that declared `dot`, and `lang` is `dot`. A plugin that declares more than one language can use `lang` to tell them apart. |
+| `src_ptr`, `src_len` | The source text of the block: the text between the fences, UTF-8, at most 1 MiB (1,048,576 **bytes** of UTF-8, not characters). Lines may end in `\n` or `\r\n`. |
 | `opts_ptr`, `opts_len` | The options, a UTF-8 JSON object. See [Options](#options). |
 | `out` | Where to put the result: a [`dcode_buf`](#dcode_buf). |
 
@@ -193,7 +193,7 @@ The three inputs are owned by the host: the plugin MUST NOT free them or keep po
 | Value | Meaning | What `out` holds |
 | --- | --- | --- |
 | `0` | Success | A complete SVG document, UTF-8. See [SVG output](#svg-output). |
-| `1` | The source is wrong: the user made a mistake; the plugin did nothing wrong | A message for the user: UTF-8 plain text, no markup, not empty. Say where (line and column, if you can) and what is wrong. |
+| `1` | The source is wrong: the user made a mistake; the plugin did nothing wrong | A message for the user: UTF-8 plain text, no markup, **not empty**. Say where (line and column, if you can) and what is wrong. If the message is empty, the host shows a fixed sentence instead ("the plugin reported an error in the source but gave no explanation"), so the user learns nothing. |
 | `-1` | An argument is invalid | Not written |
 | `-2` | Out of memory | Not written |
 
@@ -258,7 +258,7 @@ These are all the functions of `wasi_snapshot_preview1`. A plugin may import any
 
 | Function | Behavior |
 | --- | --- |
-| `fd_write` | For fd 1 and 2, the bytes go into a log buffer for this call and are reported as written. At most 16 KB is kept, for the plugin author's diagnosis; the log is never part of the result. For any other fd it returns `EBADF`. |
+| `fd_write` | For fd 1 and 2, the bytes go into a log buffer for this call and are reported as written. Only the first 16 KB is kept; the rest is dropped. The log is for the plugin author and is never part of the result. For a plugin installed with `--dev` the host writes each call's log to its own log, at level INFO, tagged with the plugin `id`. For a signed plugin the log is discarded, because it may contain the user's source text. For any other fd it returns `EBADF`. |
 | `random_get` | Fills the buffer with pseudo-random bytes from a **fixed seed**. The sequence starts over at the beginning of every call, so equal inputs give equal outputs. |
 | `clock_time_get` | Succeeds and returns a time of 0. |
 | `args_sizes_get`, `args_get`, `environ_sizes_get`, `environ_get` | Succeed and report an empty list: no arguments, no environment variables. |
@@ -326,7 +326,7 @@ Plugins MUST be signed, with one exception for development.
 
 A valid signature proves only that the file has not been modified and that it comes from the holder of that key. **Whether the key deserves trust is decided by the person who installs the plugin.** DCode helps with trust on first use:
 
-- At install time DCode shows the key's fingerprint (its key id).
+- At install time DCode shows the key's **key id**. It is written the way `minisign` writes it in the comment of the `.pub` file (`untrusted comment: minisign public key: E8B20833B171CF7A`): 16 uppercase hexadecimal digits, the eight key-id bytes read as a little-endian number, so that you can compare it with what your own tools print. (The key id is also bytes 3 to 10 of the base64-decoded `publicKey`, in file order; the displayed form is those bytes reversed.)
 - After the first installation, DCode remembers that this plugin `id` belongs to this key. An update MUST be signed with the same key, or it is refused. A lost or leaked key therefore cannot be replaced for an existing plugin: back the secret key up and protect it.
 - If a plugin is uninstalled and installed again, that is a new first installation. DCode then tells the user which key the plugin used before.
 
@@ -341,9 +341,9 @@ The host enforces the limits. A plugin does not declare them.
 | `.wasm` file size | 32 MiB | The plugin is refused at install time |
 | Linear memory | 256 MiB (4096 pages of 64 KiB) | `memory.grow` fails; the plugin returns `-2` or traps |
 | Time for one call, counting instantiation, the start section, `_initialize` and `dcode_render_block` | 5 s | The host terminates the call and reports that rendering timed out |
-| Source size | 1 MiB (1,048,576 bytes) | The plugin is not called; the host reports a failure |
+| Source size | 1 MiB, counted in UTF-8 bytes (1,048,576) | The plugin is not called; the host reports a failure |
 | Output size (`out.len`) | 8 MiB (8,388,608 bytes) | The output is discarded and reported as a plugin failure |
-| Log kept from `fd_write` | 16 KB | Excess output is not kept |
+| Log kept from `fd_write` | 16 KB, the first 16 KB | The rest is dropped; the log is kept only for `--dev` plugins (see [Imports and WASI](#imports-and-wasi)) |
 
 About the memory limit: before compiling a module the host rewrites its memory section so that the maximum is 256 MiB. If the module declares a smaller maximum, the smaller one stays. The file on disk is not changed, so the signature stays valid. A module whose *initial* memory is already larger than the limit cannot be installed. A module needs no declared maximum of its own.
 

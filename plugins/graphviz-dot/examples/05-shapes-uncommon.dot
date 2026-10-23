@@ -1,4 +1,4 @@
-// Graphviz shapes that layout-rs does not draw: they fall back to an ellipse.
+// A tour of less common node shapes.
 digraph shapes {
   d [shape=diamond label="diamond"];
   e [shape=ellipse label="ellipse"];

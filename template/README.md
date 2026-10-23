@@ -93,7 +93,7 @@ dcode plugin install dist/<name>.wasm
 dcode plugin list
 ```
 
-DCode shows the fingerprint of your key at install time. Then put a block like this in a chat message or a document:
+DCode shows the key id of your key at install time (the value `minisign` writes in the comment of your `.pub` file). Then put a block like this in a chat message or a document:
 
 ````
 ```textbox

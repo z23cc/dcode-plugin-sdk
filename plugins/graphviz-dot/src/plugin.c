@@ -462,7 +462,7 @@ int32_t dcode_render_block(const uint8_t *lang_ptr, size_t lang_len,
   if (gvRenderData(gvc, g, "svg", &data, &len) != 0 || data == NULL || saw_error)
     return fail(out, "rendering failed");
 
-  if (errlen) fputs(errbuf, stderr); /* warnings: not shown to the user, kept in the host's plugin log */
+  if (errlen) fputs(errbuf, stderr); /* warnings: not shown to the user; the host keeps this log for --dev plugins only */
 
   char prefix[16];
   id_prefix(prefix, src, src_len, dark);
