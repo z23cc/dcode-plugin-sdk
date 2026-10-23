@@ -29,7 +29,7 @@ Copy this directory out of the repository, then:
 2. In `plugin.json`, change:
    - `id`: reverse-domain notation is recommended (`io.github.your-name.text-box`). The rule is `^[a-z0-9]+([.-][a-z0-9]+)*$`, at most 64 characters. It identifies your plugin for good, so pick it once.
    - `name`, `version`, `description`, `homepage`.
-   - `renderBlock.languages`: the code-block languages you handle (1 to 16 entries; lowercase letters, digits, `+`, `-`). `mermaid` and `wireframe` are taken. A language can belong to only one installed plugin.
+   - `renderBlock.languages`: the code-block languages you handle (1 to 16 entries; lowercase letters, digits, `+`, `-`). Claiming `mermaid` or `wireframe` replaces DCode's own drawing of it. A language can belong to only one installed plugin.
    - `publicKey`: see the next step. The value in the template belongs to nobody; no signature can match it.
 3. Write your renderer in `src/lib.rs`.
 4. Regenerate the lock file. The crate rename (the lock file records the package name) and every dependency you add change it, and `build.sh` builds with `--locked`, which refuses to update it and stops with `cannot update the lock file` (exit status 101):

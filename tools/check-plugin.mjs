@@ -207,7 +207,7 @@ function checkManifest(text, report) {
   else {
     for (const l of langs) {
       if (typeof l !== "string" || !/^[a-z0-9+-]+$/.test(l)) report.fail("manifest", `language ${JSON.stringify(l)}: only lowercase letters, digits, + and -`);
-      else if (l === "mermaid" || l === "wireframe") report.fail("manifest", `language ${l} is built into DCode and cannot be claimed`);
+      else if (l === "mermaid" || l === "wireframe") report.pass("manifest", `language ${l} is allowed; an enabled plugin draws it instead of DCode`);
       else report.pass("manifest", `language ${l} is allowed`);
     }
   }

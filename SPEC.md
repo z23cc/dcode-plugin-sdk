@@ -300,7 +300,7 @@ The manifest is a UTF-8 JSON object stored in **exactly one** custom section nam
 | `homepage` | no | A string, the address of the plugin's home page. Information for humans only. |
 | `publicKey` | yes | The author's minisign public key: the base64 string on the second line of the `.pub` file (it starts with `RW`). The signature is checked with this key. |
 | `renderBlock` | yes (ABI 1 has no other extension point) | An object with the key `languages`. |
-| `renderBlock.languages` | yes | An array of 1 to 16 strings. Each uses only lowercase letters, digits, `+` and `-`. `mermaid` and `wireframe` are built into DCode and cannot be claimed. |
+| `renderBlock.languages` | yes | An array of 1 to 16 strings. Each uses only lowercase letters, digits, `+` and `-`. `mermaid` and `wireframe` may be claimed too: DCode draws them itself, and an enabled plugin that declares one draws it instead. |
 
 Further rules:
 
@@ -434,7 +434,7 @@ Go through this before you publish a plugin. `tools/check-plugin.mjs` in this re
 **Manifest and signature**
 
 - [ ] There is exactly one `dcode.plugin` section, and it is UTF-8 JSON with the fields in [Manifest](#manifest).
-- [ ] `id` and `languages` follow the character rules; no language is `mermaid` or `wireframe`.
+- [ ] `id` and `languages` follow the character rules. If a language is `mermaid` or `wireframe`, you mean to replace DCode's own drawing of it.
 - [ ] `publicKey` is your minisign public key; the `.wasm` was signed with the matching secret key **after** its last change; `<file>.wasm.minisig` sits next to it. Your plugin's identity is that whole public key, so a later update must use the same one.
 - [ ] The secret key is backed up, and is not in version control.
 
