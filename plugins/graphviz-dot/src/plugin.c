@@ -36,11 +36,14 @@ void dcode_free(uint8_t *ptr, size_t len) {
   free(ptr);
 }
 
+static void scrub_utf8(uint8_t *p, size_t n);
+
 static int32_t give(dcode_buf *out, const char *s, size_t n) {
   uint8_t *p = dcode_alloc(n);
   if (p == NULL)
     return -2;
   memcpy(p, s, n);
+  scrub_utf8(p, n);
   dcode_buf result = {p, n};
   memcpy(out, &result, sizeof result); /* `out` has no alignment guarantee */
   return 0;
@@ -48,26 +51,43 @@ static int32_t give(dcode_buf *out, const char *s, size_t n) {
 
 /* ---- helpers ------------------------------------------------------------- */
 
+/* Length of the well-formed UTF-8 sequence at s (at most n bytes), or 0. */
+static size_t utf8_seq(const unsigned char *s, size_t n) {
+  unsigned char c = s[0];
+  size_t extra;
+  uint32_t cp, min;
+  if (c < 0x80) return 1;
+  else if ((c & 0xE0) == 0xC0) { extra = 1; cp = c & 0x1F; min = 0x80; }
+  else if ((c & 0xF0) == 0xE0) { extra = 2; cp = c & 0x0F; min = 0x800; }
+  else if ((c & 0xF8) == 0xF0) { extra = 3; cp = c & 0x07; min = 0x10000; }
+  else return 0;
+  if (extra >= n) return 0;
+  for (size_t k = 1; k <= extra; k++) {
+    if ((s[k] & 0xC0) != 0x80) return 0;
+    cp = (cp << 6) | (s[k] & 0x3F);
+  }
+  if (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;
+  return extra + 1;
+}
+
 static int valid_utf8(const unsigned char *s, size_t n) {
-  size_t i = 0;
-  while (i < n) {
-    unsigned char c = s[i];
-    size_t extra;
-    uint32_t cp, min;
-    if (c < 0x80) { i++; continue; }
-    else if ((c & 0xE0) == 0xC0) { extra = 1; cp = c & 0x1F; min = 0x80; }
-    else if ((c & 0xF0) == 0xE0) { extra = 2; cp = c & 0x0F; min = 0x800; }
-    else if ((c & 0xF8) == 0xF0) { extra = 3; cp = c & 0x07; min = 0x10000; }
-    else return 0;
-    if (i + extra >= n) return 0;
-    for (size_t k = 1; k <= extra; k++) {
-      if ((s[i + k] & 0xC0) != 0x80) return 0;
-      cp = (cp << 6) | (s[i + k] & 0x3F);
-    }
-    if (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;
-    i += extra + 1;
+  for (size_t i = 0; i < n;) {
+    size_t k = utf8_seq(s + i, n - i);
+    if (k == 0) return 0;
+    i += k;
   }
   return 1;
+}
+
+/* Graphviz's messages quote the text near an error and can cut a multi-byte
+ * character in half. Anything handed to the host must be UTF-8, so overwrite
+ * each stray byte with '?' (same length, nothing moves). */
+static void scrub_utf8(uint8_t *p, size_t n) {
+  for (size_t i = 0; i < n;) {
+    size_t k = utf8_seq(p + i, n - i);
+    if (k == 0) p[i++] = '?';
+    else i += k;
+  }
 }
 
 /* Graphviz reports problems through this hook; keep the text so a failed
@@ -463,7 +483,17 @@ int32_t dcode_render_block(const uint8_t *lang_ptr, size_t lang_len,
   if (out == NULL) return -1;
   const unsigned char *src = src_len ? src_ptr : (const unsigned char *)"";
   if (src_len && src == NULL) return -1;
-  if (!valid_utf8(src, src_len) || memchr(src, 0, src_len) != NULL) return -1;
+  if (!valid_utf8(src, src_len)) return -1;
+  /* NUL is valid UTF-8 but ends a C string, and Graphviz reads C strings: a
+   * source error for the user, not an invalid argument. */
+  const unsigned char *nul = src_len ? memchr(src, 0, src_len) : NULL;
+  if (nul != NULL) {
+    size_t line = 1;
+    for (const unsigned char *q = src; q < nul; q++) line += (*q == '\n');
+    char msg[96];
+    int n = snprintf(msg, sizeof msg, "line %zu: the source contains a NUL character (U+0000)", line);
+    return give(out, msg, (size_t)n) == 0 ? 1 : -2;
+  }
   int dark;
   if (parse_opts(opts_len ? (const char *)opts_ptr : "", opts_len, &dark) != 0) return -1;
 
