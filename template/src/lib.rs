@@ -127,7 +127,11 @@ pub unsafe extern "C" fn dcode_render_block(
 ) -> i32 {
     // `lang` says which of the manifest's languages this block was written in.
     // This plugin claims one language, so it does not look at it.
-    if out.is_null() {
+    //
+    // A null pointer with a non-zero length is an invalid argument, not an empty
+    // string. The host never sends one; the check is for the person who calls
+    // the function by hand (see tools/check-plugin.mjs).
+    if out.is_null() || (src_ptr.is_null() && src_len != 0) || (opts_ptr.is_null() && opts_len != 0) {
         return -1;
     }
     let Ok(src) = std::str::from_utf8(input(src_ptr, src_len)) else {

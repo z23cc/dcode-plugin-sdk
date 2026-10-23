@@ -11,7 +11,10 @@ lib=$(echo "$name" | tr - _)
 
 # Keep this machine's paths out of the binary (panic messages embed them).
 # Without this, two builds on two machines differ and leak a home directory.
-export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/home --remap-path-prefix=$(pwd)=."
+#
+# The memory maximum (256 MiB, what the host enforces) is repeated here because a
+# RUSTFLAGS environment variable replaces `rustflags` in .cargo/config.toml.
+export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=--max-memory=268435456 --remap-path-prefix=$HOME=/home --remap-path-prefix=$(pwd)=."
 cargo build --release --locked
 
 mkdir -p dist

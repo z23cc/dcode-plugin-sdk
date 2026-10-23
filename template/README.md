@@ -19,6 +19,7 @@ What is in the crate:
 - Rust with the WebAssembly target: `rustup target add wasm32-unknown-unknown`
 - [minisign](https://jedisct1.github.io/minisign/), to create a key and sign
 - The `dcode` command line tool, to install the plugin
+- Node 18 or newer, only to run `tools/check-plugin.mjs`
 
 ## 2. Make it yours
 
@@ -31,6 +32,13 @@ Copy this directory out of the repository, then:
    - `renderBlock.languages`: the code-block languages you handle (1 to 16 entries; lowercase letters, digits, `+`, `-`). `mermaid` and `wireframe` are taken. A language can belong to only one installed plugin.
    - `publicKey`: see the next step. The value in the template belongs to nobody; no signature can match it.
 3. Write your renderer in `src/lib.rs`.
+4. Regenerate the lock file. The crate rename (the lock file records the package name) and every dependency you add change it, and `build.sh` builds with `--locked`, which refuses to update it and stops with `cannot update the lock file` (exit status 101):
+
+   ```sh
+   cargo generate-lockfile
+   ```
+
+   Commit `Cargo.lock` afterwards: plugins are libraries, and a locked build is what makes the file reproducible.
 
 ## 3. Make a signing key
 
@@ -75,6 +83,30 @@ wasm-tools print dist/<name>.wasm | grep -E '^\s*\((import|export|@custom)'
 
 You should see the memory and the four `dcode_*` exports, a `dcode.plugin` custom section with your manifest, and no imports at all. (`wasm-tools` is optional; it comes from `cargo install wasm-tools`.)
 
+### Check it
+
+`tools/check-plugin.mjs` in the SDK repository checks a plugin against `SPEC.md` without a DCode host. It needs only Node 18 or newer. Give it a source file in your plugin's language that should render, and one with a mistake that should not:
+
+```sh
+node path/to/tools/check-plugin.mjs dist/<name>.wasm --dev --sample good.txt --bad-sample bad.txt --out preview
+```
+
+It checks the module (memory, exports, imports, manifest), calls the plugin in a fresh instance for every case with the same memory and time limits as the host, checks the return codes and the SVG, throws odd inputs at it, and writes the pictures, in both themes, to `preview/index.html`. Drop `--dev` once the plugin is signed: it then also verifies the signature. Fix every `FAIL` line; `WARN` lines are advice.
+
+### If `build.sh` builds but the plugin has imports
+
+If you add a dependency and the check (or `dcode plugin install`) lists imports from `__wbindgen_placeholder__`, `__wbindgen_externref_xform__` or `env`, a crate in your dependency tree has pulled in `wasm-bindgen`, which assumes a browser, and the plugin would be refused. Build for `wasm32-wasip1` instead:
+
+```sh
+rustup target add wasm32-wasip1
+```
+
+In `.cargo/config.toml` change `target` to `wasm32-wasip1` and rename the `[target.wasm32-unknown-unknown]` table to `[target.wasm32-wasip1]`; in `build.sh` change `target/wasm32-unknown-unknown/release` to `target/wasm32-wasip1/release`. The module then imports only a few allowed functions of `wasi_snapshot_preview1` (`random_get`, `fd_write`, `proc_exit` and the like) instead of browser glue, and gets an `_initialize` export, which the host calls. See [Imports and WASI](../SPEC.md#imports-and-wasi). `examples/svgbob` in the repository is built this way.
+
+### Wrapping an existing library
+
+Many rendering libraries write SVG for a web page: a `<style>` block, CSS classes, a named font, a background rectangle, ids like `arrow` that two pictures on a page would share. `SPEC.md` forbids all of that ([SVG output](../SPEC.md#svg-output)), and the host removes it anyway, so the picture would come out wrong. If the library has options to switch the CSS and the backdrop off, use them; then translate what is left (classes become presentation attributes such as `fill`, `stroke` and `stroke-dasharray`), choose a generic font family and prefix the ids. `examples/svgbob` shows how for the `svgbob` crate. A library that panics or exhausts memory on large input needs limits of your own: return `1` with a message ([Limits](../SPEC.md#limits)).
+
 ## 5. Sign
 
 Sign the file you are going to ship, **after** its last change. A rebuild, or any other change to the `.wasm`, means signing again.
@@ -117,4 +149,4 @@ Raise `version` in `plugin.json`, rebuild, sign **with the same key**, and insta
 
 ## Before you publish
 
-Go through the [conformance checklist](../SPEC.md#conformance-checklist) in `SPEC.md`. The points people most often miss: return `1` (not a panic) for wrong source; no scripts, `foreignObject`, external references or named fonts in the SVG; prefix every `id` in the SVG; and make output depend only on the inputs.
+Run `tools/check-plugin.mjs` (see [Check it](#check-it)) and go through the [conformance checklist](../SPEC.md#conformance-checklist) in `SPEC.md`. The points people most often miss: return `1` (not a panic) for wrong source; no scripts, `foreignObject`, `<style>`, `style` attributes, external references or named fonts in the SVG; prefix every `id` in the SVG; and make output depend only on the inputs.

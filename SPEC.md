@@ -201,7 +201,7 @@ Details:
 
 - **Return `1`, not a trap, for any input the user can type.** `1` is shown to the user as a problem in their block. A trap is shown as a broken plugin.
 - Return `-1` when `src` is not valid UTF-8, when `opts` is not valid UTF-8 JSON or is not a JSON object, or when `out` is null. The host never sends such arguments; the code exists so that a plugin can be checked by hand.
-- Return `-2` when the plugin cannot allocate memory it needs, including the result buffer. On `-1` and `-2` the plugin MUST NOT write `out`.
+- Return `-2` when the plugin **notices** that it cannot allocate memory it needs, including the result buffer; on `-1` and `-2` the plugin MUST NOT write `out`. This is a duty only where the plugin itself sees the failure: most Rust code, and most libraries, allocate infallibly and **trap** when `memory.grow` fails. That is acceptable: a trap is reported as a plugin failure, as described below. (The template reserves the result buffer fallibly and returns `-2` for it; the rest of its work is not fallible.)
 - `-1` and `-2` are not source errors: the host treats them as a plugin failure, like any other return value outside the table.
 - The result for `0` and `1` SHOULD be a pure function of `(lang, src, opts)`. The host caches both kinds of result by their inputs; output that varies with anything else only defeats the cache. (The fixed-seed `random_get` and the zero clock in [Imports and WASI](#imports-and-wasi) are there for this reason.)
 
@@ -212,7 +212,7 @@ The plugin does not report these and cannot influence the message:
 - a trap, including a Rust panic compiled with `panic = "abort"`;
 - a call to `proc_exit`;
 - running over the time limit or the output limit (see [Limits](#limits));
-- running out of memory in a way that traps instead of returning `-2`.
+- running out of memory in a way that traps instead of returning `-2`, which is what a library that allocates infallibly does.
 
 ## Options
 
@@ -243,6 +243,8 @@ An import gets a plugin **refused at install time** in exactly three cases:
 1. it imports anything from the module `env`;
 2. it imports from any module other than `wasi_snapshot_preview1` (including `wasi_unstable` and any `wasi:` component-model name);
 3. it imports a name from `wasi_snapshot_preview1` that does not exist in preview 1 (the list below), or imports something that is not a function from that module.
+
+**Browser glue from dependencies.** A Rust dependency tree can pull in `wasm-bindgen` (for example through a UI or DOM crate that your renderer does not really need). Built for `wasm32-unknown-unknown`, such a module imports functions from `__wbindgen_placeholder__` or `__wbindgen_externref_xform__`, which is the second case above: **the plugin is refused at install time**. Build for `wasm32-wasip1` instead. `wasm-bindgen` then leaves the browser glue out, and the module imports only functions of `wasi_snapshot_preview1` (typically `random_get`, `environ_get`, `environ_sizes_get`, `fd_write` and `proc_exit`), which are allowed. `tools/check-plugin.mjs` names the offending imports. The `svgbob` example in this repository is built that way.
 
 ### The 46 functions
 
@@ -345,7 +347,9 @@ The host enforces the limits. A plugin does not declare them.
 | Output size (`out.len`) | 8 MiB (8,388,608 bytes) | The output is discarded and reported as a plugin failure |
 | Log kept from `fd_write` | 16 KB, the first 16 KB | The rest is dropped; the log is kept only for `--dev` plugins (see [Imports and WASI](#imports-and-wasi)) |
 
-About the memory limit: before compiling a module the host rewrites its memory section so that the maximum is 256 MiB. If the module declares a smaller maximum, the smaller one stays. The file on disk is not changed, so the signature stays valid. A module whose *initial* memory is already larger than the limit cannot be installed. A module needs no declared maximum of its own.
+**The source limit is a transport limit.** The host accepts 1 MiB of source; that does not mean a plugin can render 1 MiB of source in 5 s and 256 MiB. A plugin SHOULD set its own, smaller limits (on bytes, lines, line length or on whatever drives its cost) and return `1` with a message that says which limit was exceeded and what to do ("split the diagram"), instead of running into the time limit.
+
+About the memory limit: before compiling a module the host rewrites its memory section so that the maximum is 256 MiB. If the module declares a smaller maximum, the smaller one stays. The file on disk is not changed, so the signature stays valid. A module whose *initial* memory is already larger than the limit cannot be installed. A module needs no declared maximum of its own, but it is useful to declare the same one: then a plugin that you run outside the host fails where it would fail inside. For Rust, add `-C link-arg=--max-memory=268435456` to the rustflags (the template does); with wasi-sdk, link with `-Wl,--max-memory=268435456`.
 
 ## State and re-entrancy
 
@@ -385,7 +389,7 @@ That is a second line of defence, not permission to produce such content: **what
 
 **Shared documents.** The host may place SVGs from several code blocks, and from several plugins, in one HTML document. The SVGs then share one namespace for `id`s. Therefore:
 
-- Give every element `id` a prefix derived from the source text, for example a hash of `src` and `theme` (`d3a1c9e4-node1`). Equal inputs must still give equal output. Do not use a fixed prefix or a counter that restarts: two blocks would share ids.
+- Give every element `id` a prefix that tells your picture from every **other** picture on the page: your plugin's own prefix plus a hash of the source text and `theme` (for example `bob-3a1c9e4d7b2f6a10-arrow`). Two blocks with exactly the same source and theme then get exactly the same ids, and that is fine: the elements behind those ids are identical too, so it does not matter which of them a reference reaches. What must not happen is that two **different** pictures share an id. So do not use a fixed prefix, a counter that restarts for every call, or the ids of the library you call, unprefixed.
 - Do not use `<style>` blocks or `style` attributes. The host removes them (see above), and they would leak into other pictures if it did not.
 
 ## Versioning
@@ -398,7 +402,7 @@ That is a second line of defence, not permission to produce such content: **what
 
 ## Conformance checklist
 
-Go through this before you publish a plugin.
+Go through this before you publish a plugin. `tools/check-plugin.mjs` in this repository checks most of it for you: the module shape, the manifest, the signature, the return codes and the SVG rules (see the README); what it cannot know, such as whether your plugin's output is correct, stays with you.
 
 **Module**
 

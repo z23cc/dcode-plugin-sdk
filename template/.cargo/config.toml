@@ -1,3 +1,11 @@
 [build]
 # Makes a bare `cargo build --release` produce a plugin.
 target = "wasm32-unknown-unknown"
+
+[target.wasm32-unknown-unknown]
+# The host caps a plugin's memory at 256 MiB. Declaring the same maximum in the
+# module makes a plugin that you run yourself (by hand, or with
+# tools/check-plugin.mjs) hit the same wall as in the host.
+# If you build with RUSTFLAGS set, as build.sh does, Cargo ignores this line:
+# the flag is repeated in build.sh for that reason.
+rustflags = ["-C", "link-arg=--max-memory=268435456"]
