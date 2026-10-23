@@ -1,0 +1,12 @@
+// Graphviz shapes that layout-rs does not draw: they fall back to an ellipse.
+digraph shapes {
+  d [shape=diamond label="diamond"];
+  e [shape=ellipse label="ellipse"];
+  p [shape=plaintext label="plaintext"];
+  h [shape=hexagon label="hexagon"];
+  t [shape=triangle label="triangle"];
+  c [shape=cylinder label="cylinder"];
+  d -> e -> p;
+  d -> h -> t;
+  e -> c;
+}

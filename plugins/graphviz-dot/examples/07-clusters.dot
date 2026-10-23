@@ -1,0 +1,16 @@
+digraph G {
+  subgraph cluster_frontend {
+    label = "frontend";
+    style = filled;
+    color = lightgrey;
+    ui -> state -> api_client;
+  }
+  subgraph cluster_backend {
+    label = "backend";
+    color = blue;
+    router -> handler -> store;
+  }
+  api_client -> router;
+  store -> cache;
+  cache -> handler;
+}

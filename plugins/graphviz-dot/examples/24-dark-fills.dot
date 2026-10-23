@@ -1,0 +1,9 @@
+// Text colour must stay readable on explicit dark and light fills in both themes.
+digraph G {
+  node [shape=box style=filled];
+  night [fillcolor=navy label="navy fill"];
+  coal [fillcolor=black label="black fill"];
+  snow [fillcolor=white label="white fill"];
+  sun [fillcolor=yellow label="yellow fill"];
+  night -> coal -> snow -> sun;
+}

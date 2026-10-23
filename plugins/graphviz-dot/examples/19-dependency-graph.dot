@@ -1,0 +1,8 @@
+digraph deps {
+  rankdir=LR;
+  node [shape=box];
+  app -> ui; app -> core; app -> net;
+  ui -> core; ui -> theme;
+  net -> core; net -> tls;
+  core -> util; theme -> util; tls -> util;
+}

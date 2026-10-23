@@ -1,0 +1,10 @@
+digraph styled {
+  node [shape=box];
+  ok [label="passed" style=filled fillcolor=palegreen];
+  bad [label="failed" style=filled fillcolor=tomato];
+  warn [label="flaky" style=filled fillcolor=gold fontsize=18];
+  plain [label="not run" color=gray];
+  ok -> bad [color=red penwidth=2];
+  ok -> warn [color=blue];
+  warn -> plain [style=dashed];
+}

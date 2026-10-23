@@ -1,0 +1,5 @@
+digraph pipeline {
+  rankdir=LR;
+  source -> parse -> check -> optimize -> emit;
+  check -> report [label="errors"];
+}

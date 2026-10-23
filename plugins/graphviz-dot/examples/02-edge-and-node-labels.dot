@@ -1,0 +1,9 @@
+digraph requests {
+  client [label="Browser"];
+  server [label="API server"];
+  db [label="Database"];
+  client -> server [label="GET /items"];
+  server -> db [label="SELECT"];
+  db -> server [label="rows"];
+  server -> client [label="200 OK"];
+}

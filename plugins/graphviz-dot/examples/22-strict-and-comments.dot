@@ -1,0 +1,7 @@
+/* a block comment */
+strict digraph G {
+  // a line comment
+  a -> b;
+  a -> b; // duplicate, collapsed by strict in real Graphviz
+  b -> c;
+}

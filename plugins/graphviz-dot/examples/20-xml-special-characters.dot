@@ -1,0 +1,7 @@
+digraph G {
+  a [label="a & b < c > d"];
+  b [label="say \"hi\" 'there'"];
+  c [label="</text><script>alert(1)</script>"];
+  a -> b [label="x < y && y > z"];
+  b -> c;
+}

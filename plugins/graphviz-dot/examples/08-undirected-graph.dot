@@ -1,0 +1,6 @@
+graph friends {
+  alice -- bob;
+  bob -- carol;
+  carol -- alice;
+  carol -- dave;
+}

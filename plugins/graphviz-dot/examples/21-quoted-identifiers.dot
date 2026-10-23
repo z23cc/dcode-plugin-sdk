@@ -1,0 +1,5 @@
+digraph G {
+  "node one" -> "node two";
+  "node two" -> "node three" [label="edge label"];
+  "node one" -> "node three";
+}

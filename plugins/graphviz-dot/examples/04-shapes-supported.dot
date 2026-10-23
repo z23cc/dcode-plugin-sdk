@@ -1,0 +1,10 @@
+digraph shapes {
+  start [shape=circle label="start"];
+  work [shape=box label="work"];
+  fin [shape=doublecircle label="end"];
+  rec [shape=record label="{name|age|city}"];
+  mrec [shape=Mrecord label="{id|payload}"];
+  start -> work -> fin;
+  work -> rec;
+  work -> mrec;
+}

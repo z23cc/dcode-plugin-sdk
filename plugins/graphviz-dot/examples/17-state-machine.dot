@@ -1,0 +1,10 @@
+digraph fsm {
+  rankdir=LR;
+  node [shape=doublecircle]; accept;
+  node [shape=circle];
+  idle -> running [label="start"];
+  running -> paused [label="pause"];
+  paused -> running [label="resume"];
+  running -> accept [label="finish"];
+  running -> idle [label="abort"];
+}

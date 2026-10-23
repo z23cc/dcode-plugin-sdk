@@ -1,0 +1,6 @@
+digraph G {
+  node [shape=box];
+  a [label="first line\nsecond line\nthird line"];
+  b [label="short"];
+  a -> b [label="two\nlines"];
+}

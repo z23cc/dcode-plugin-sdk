@@ -1,0 +1,10 @@
+// Graph-level attributes layout-rs ignores: bgcolor, nodesep, ranksep, splines, rank=same.
+digraph G {
+  bgcolor=lightyellow;
+  nodesep=1.0;
+  ranksep=1.0;
+  splines=ortho;
+  { rank=same; a; b; }
+  a -> c;
+  b -> c;
+}

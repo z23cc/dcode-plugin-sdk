@@ -1,0 +1,5 @@
+digraph G {
+  hub -> n1; hub -> n2; hub -> n3; hub -> n4; hub -> n5; hub -> n6;
+  hub -> n7; hub -> n8; hub -> n9; hub -> n10; hub -> n11; hub -> n12;
+  n1 -> sink; n4 -> sink; n8 -> sink; n12 -> sink;
+}

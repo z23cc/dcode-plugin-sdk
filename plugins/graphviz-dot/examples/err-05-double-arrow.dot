@@ -1,0 +1,4 @@
+// expect-error-line: 3
+digraph G {
+  a -> -> b;
+}

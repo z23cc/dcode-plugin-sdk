@@ -1,0 +1,7 @@
+digraph G {
+  rankdir=LR;
+  node [shape=box];
+  a [label="A rather long node label that keeps going"];
+  b [label="Another long label for the second node"];
+  a -> b [label="and a long edge label as well"];
+}

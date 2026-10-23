@@ -1,0 +1,7 @@
+// rankdir=BT and RL are not implemented by layout-rs (it treats them as TB).
+digraph G {
+  rankdir=BT;
+  leaf1 -> parent;
+  leaf2 -> parent;
+  parent -> root;
+}
