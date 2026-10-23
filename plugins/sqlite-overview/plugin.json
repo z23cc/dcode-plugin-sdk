@@ -1,0 +1,10 @@
+{
+  "id": "io.github.z23cc.sqlite-overview",
+  "name": "SQLite overview",
+  "version": "0.1.0",
+  "abi": 1,
+  "description": "Shows an overview of a SQLite database file: its tables, their CREATE statements and the first rows.",
+  "homepage": "https://github.com/z23cc/dcode-plugin-sdk",
+  "publicKey": "RWR6z3GxMwiy6O87rHqNDHt03KxFOcJMYOiFIq2frdF88KjjodSH5mVE",
+  "renderFile": { "extensions": [".sqlite", ".sqlite3", ".db"] }
+}
