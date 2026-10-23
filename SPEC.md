@@ -205,9 +205,9 @@ int32_t dcode_render_block(lang, src, opts, out);
 | `opts_ptr`, `opts_len` | The options, a UTF-8 JSON object. See [Options](#options). |
 | `out` | Where to put the result: a [`dcode_buf`](#dcode_buf). |
 
-The three inputs are owned by the host: the plugin MUST NOT free them or keep pointers to them after returning.
+The three inputs are owned by the host: the plugin MUST NOT free them or keep pointers to them after returning. The host may or may not call `dcode_free` on them (the current host does not: it discards the instance once it has read the result), so a plugin MUST NOT depend on the inputs being freed, nor on their not being freed.
 
-*How the host calls a plugin.* The host instantiates the module (the start section runs), calls `_initialize` if it is exported, calls `dcode_alloc` for each input and copies the input in, calls `dcode_render_block`, reads the result, calls `dcode_free` on the result and on the inputs, and discards the instance.
+*How the host calls a plugin.* The host instantiates the module (the start section runs), calls `_initialize` if it is exported, calls `dcode_alloc` for each input and copies the input in, calls `dcode_render_block`, reads the result, calls `dcode_free` on the result, and discards the instance.
 
 ### Return values
 
@@ -250,7 +250,7 @@ int32_t dcode_render_file(name, data, opts, out);
 | `opts_ptr`, `opts_len` | The options, a UTF-8 JSON object, the same as for `dcode_render_block`. See [Options](#options). |
 | `out` | Where to put the result: a [`dcode_buf`](#dcode_buf). |
 
-The three inputs are owned by the host: the plugin MUST NOT free them or keep pointers to them after returning. The host calls the function the same way as `dcode_render_block` (a fresh instance, `_initialize`, `dcode_alloc` and a copy for each input, the call, `dcode_free` on the result and on the inputs). The file lives in the plugin's linear memory for the whole call: a 32 MiB file takes 32 MiB of the 256 MiB, and a plugin that copies it or builds large structures from it has less than it may think. The plugin cannot read a part of a file later; it has all of it, or nothing.
+The three inputs are owned by the host: the plugin MUST NOT free them or keep pointers to them after returning, and MUST NOT depend on whether the host calls `dcode_free` on them (see [`dcode_render_block`](#dcode_render_block-and-return-values)). The host calls the function the same way as `dcode_render_block` (a fresh instance, `_initialize`, `dcode_alloc` and a copy for each input, the call, `dcode_free` on the result). The file lives in the plugin's linear memory for the whole call: a 32 MiB file takes 32 MiB of the 256 MiB, and a plugin that copies it or builds large structures from it has less than it may think. The plugin cannot read a part of a file later; it has all of it, or nothing.
 
 ### Return values
 
@@ -420,11 +420,13 @@ The host enforces the limits. A plugin does not declare them.
 | --- | --- | --- |
 | `.wasm` file size | 32 MiB | The plugin is refused at install time |
 | Linear memory (the limit covers nothing else, which is why GC types are refused) | 256 MiB (4096 pages of 64 KiB) | `memory.grow` fails; the plugin returns `-2` or traps |
-| Time for one call, counting instantiation, the start section, `_initialize` and `dcode_render_block` | 5 s | The host terminates the call and reports that rendering timed out |
+| Time for one call of `dcode_render_block` or `dcode_render_file`, counting instantiation, the start section, `_initialize` and the render function | 5 s | The host terminates the call and reports that rendering timed out |
 | Source size (`renderBlock`) | 1 MiB, counted in UTF-8 bytes (1,048,576) | The plugin is not called; the host reports a failure |
 | File size (`renderFile`) | 32 MiB (33,554,432 bytes) | The file is not read and the plugin is not called; the person is told that the file is too large to preview |
 | Output size (`out.len`), for both render functions | 8 MiB (8,388,608 bytes) | The output is discarded and reported as a plugin failure |
 | Log kept from `fd_write` | 16 KB, the first 16 KB | The rest is dropped; the log is kept only for `--dev` plugins (see [Imports and WASI](#imports-and-wasi)) |
+
+The 5 s clock starts when the host hands the call to the thread that runs plugins, and everything that thread does for the call is inside it. For a file previewer that includes **reading the file from disk** (a file on a slow or network disk uses part of the 5 s before the plugin starts) and, on the first call after an install, compiling the module. Time spent waiting in the queue behind other calls is not counted.
 
 **The source limit is a transport limit.** The host accepts 1 MiB of source; that does not mean a plugin can render 1 MiB of source in 5 s and 256 MiB. A plugin SHOULD set its own, smaller limits (on bytes, lines, line length or on whatever drives its cost) and return `1` with a message that says which limit was exceeded and what to do ("split the diagram"), instead of running into the time limit. The same goes for the file limit: a file previewer gets up to 32 MiB, sitting in its own memory, and SHOULD preview a start of it instead of working through all of it.
 
@@ -492,7 +494,7 @@ On return value `2` of `dcode_render_file`, `out` holds an HTML page. DCode neve
 **What the viewer does with it**
 
 1. **It builds the document itself.** From the plugin's page it takes the content of `<body>` and the `<style>` elements of `<head>`; everything else in the page (`<title>`, `<meta>`, ...) is dropped. It puts that into its own document, which starts with a base style of its own (the theme's text colour, a 14 px system font, some padding, a transparent background; yours come after it and win) and a policy: `Content-Security-Policy: default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'`. Under it no request of any kind can be made, whatever the markup says: images and fonts load only from `data:` URLs. The policy comes before any of the plugin's text.
-2. **It sanitizes the markup** (DOMPurify, with the HTML, SVG and SVG-filter profiles). It removes these elements together with their content: `script`, `link`, `meta`, `base`, `form`, `iframe`, `frame`, `frameset`, `object`, `embed`, `portal`. It removes these attributes: `href`, `xlink:href`, `ping`, `action`, `formaction`, `srcset`, `background`, and every event handler (`onclick`, `onload`, ...). `src` and `poster` are kept only when the value is a `data:` URL; like a browser, the check skips ASCII whitespace and control characters before the scheme (`da\nta:` counts as `data:`). Links therefore are plain text and cannot be followed. `<style>` elements and `style` attributes are kept. An inline `<svg>` is kept too (with the rules above applied inside it), which is a way to draw a chart in a page.
+2. **It sanitizes the markup** (DOMPurify, with the HTML, SVG and SVG-filter profiles). It removes these elements: `script`, `link`, `meta`, `base`, `form`, `iframe`, `frame`, `frameset`, `object`, `embed`, `portal`. Removing an element does not always remove what is inside it: `script` and `iframe` go with everything inside them, and so do `noscript`, `noembed`, `noframes`, `plaintext` and `xmp`, which DOMPurify drops by default; for the others (`form`, `object`, `portal`, `frame`, `frameset`, and the elements that cannot have content, `link`, `meta`, `base`, `embed`) only the element itself goes, and its text and child elements stay in the page, sanitized in turn. A `<form>` is replaced by what was inside it. It removes these attributes: `href`, `xlink:href`, `ping`, `action`, `formaction`, `srcset`, `background`, and every event handler (`onclick`, `onload`, ...). `src` and `poster` are kept only when the value, after leading spaces and tabs are ignored, starts with `data:` in lower case (`^[ \t]*data:`, case-sensitive): `DATA:`, `Data:`, and a scheme with whitespace or control characters inside (`da\nta:`) are removed. Links therefore are plain text and cannot be followed. `<style>` elements and `style` attributes are kept. An inline `<svg>` is kept too (with the rules above applied inside it), which is a way to draw a chart in a page.
 3. **It shows the result in a frame with `sandbox=""`**, with no `allow-*` token and `referrerpolicy="no-referrer"`: no script, no navigation, no forms, no pop-ups, and the page has an origin of its own. The frame fills the viewer's tab and scrolls inside, so the page does not report its height and needs no script for it.
 
 **Do not write `url(...)` or `@import` that point outside the page** (`background: url(https://...)`). The sanitizer leaves them in the CSS; the policy refuses them. The browser starts the request and the policy stops it before anything leaves the process, but it is the policy and not the sanitizer that does it, which is one more reason for a plugin not to depend on it. Colours, borders, fonts and layout need no `url()`; a picture can be a `data:` URL.
@@ -527,7 +529,7 @@ Go through this before you publish a plugin. `tools/check-plugin.mjs` in this re
 - [ ] `dcode_render_block` returns `0`, `1`, `-1` or `-2` exactly as the table says, and writes `out` (with an unaligned store) only on `0` and `1`.
 - [ ] Invalid UTF-8 in `src`, and `opts` that is not a JSON object, give `-1`.
 - [ ] A missing or unknown `theme` means light; unknown option fields are ignored.
-- [ ] It does not free the inputs.
+- [ ] It does not free the inputs, and works whether or not the host frees them.
 - [ ] No input the user can type makes it trap or hang: wrong syntax returns `1` with a message that names the line and the problem. Try empty input, random bytes, very long lines, and a 1 MiB source.
 - [ ] Equal inputs give equal output, and nothing is kept between calls.
 

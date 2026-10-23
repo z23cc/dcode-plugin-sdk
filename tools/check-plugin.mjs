@@ -52,6 +52,9 @@ const OUT_LIMIT = 8 * 1048576;
 const FILE_LIMIT = 32 * 1048576; // the largest file the host hands to dcode_render_file
 // The formats DCode previews itself; a plugin may not declare them (SPEC.md, renderFile).
 // The source of truth is PLUGIN_BUILTIN_PREVIEW_EXTENSIONS in DCode's protocol package.
+// The policy the DCode viewer puts on a plugin's HTML page (SPEC.md, "HTML output"). A copy, like BUILTIN_EXTENSIONS:
+// the viewer's own string is PLUGIN_HTML_CSP in DCode's gui-app (src/lib/plugin-html.ts).
+const VIEWER_CSP = "default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
 const BUILTIN_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".pdf", ".docx", ".md", ".markdown", ".mmd", ".mermaid"]);
 const LOG_LIMIT = 16384;
 const WASI_FUNCS = new Set(
@@ -427,7 +430,7 @@ function checkHtml(html) {
       const an = a[1].toLowerCase(), av = decode(a[2] ?? a[3] ?? a[4] ?? "");
       if (/^on[a-z]/.test(an)) seen.add(`event handler attribute ${a[1]} (the viewer removes it; there is no script anyway)`);
       else if (HTML_FORBIDDEN_ATTRS.has(an)) seen.add(`${a[1]} attribute (the viewer removes it${an === "href" || an === "xlink:href" ? "; a link is shown as plain text" : ""})`);
-      else if (HTML_DATA_ONLY_ATTRS.has(an) && !/^data:/i.test(av.replace(/[\u0000-\u0020]/g, ""))) seen.add(`${a[1]}="${av.slice(0, 40)}" (only data: URLs are kept)`);
+      else if (HTML_DATA_ONLY_ATTRS.has(an) && !/^[ \t]*data:/.test(av)) seen.add(`${a[1]}=${JSON.stringify(av.slice(0, 40))} (only a URL that starts with lower-case data:, after any spaces or tabs, is kept)`);
       else if (an === "style") css(av, "a style attribute");
     }
   }
@@ -580,7 +583,9 @@ function usage() {
   --sig         the signature file (default: <plugin>.minisig next to the plugin)
   --dev         skip the signature check (a plugin for 'dcode plugin install --dev')
   --lang        the language to send (default: the first language in the manifest)
-  --out         write every SVG or HTML page and an index.html preview, light and dark, into this directory
+  --out         write every SVG or HTML page and an index.html preview, light and dark, into this directory. An HTML page
+                is put under the viewer's content-security policy and shown in a sandboxed frame (nothing is sanitized here:
+                the viewer would also strip what the check reports), so opening index.html makes no request
   --fuzz        how many odd inputs to try, for each extension point the plugin has (default 40)
   --show-log    print what the plugin wrote with fd_write`);
   process.exit(2);
@@ -954,6 +959,10 @@ if (isMainThread) {
       return `<section><h2>${esc(base)}</h2><div class="pair"><div class="panel light">${rendered[`${n}\0light`] ?? "(no output)"}</div><div class="panel dark">${rendered[`${n}\0dark`] ?? "(no output)"}</div></div><details><summary>source</summary><pre>${esc(sample(n).toString("utf8"))}</pre></details></section>`;
     });
     // File previews: an SVG as an image, an HTML page in a frame with sandbox="" like the viewer's (no script, no navigation).
+    // This preview does NOT sanitize: the viewer runs the page through DOMPurify first, this tool does not. What keeps the
+    // page from making a request is the viewer's shell: charset, then the viewer's CSP, before any of the plugin's text,
+    // and the frame's sandbox. (checkHtml above tells you what the viewer would strip.)
+    const pageShell = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${VIEWER_CSP}">`;
     const attr = (t) => esc(t).replace(/"/g, "&quot;");
     const fcards = fileNames.map((n) => {
       const b = path.basename(n);
@@ -961,12 +970,12 @@ if (isMainThread) {
         const r = fileRendered[`${n}\0${t}`];
         if (!r) return `<div class="panel ${t}">(no output)</div>`;
         const f = `${b}.${t}.${r.rc === 0 ? "svg" : "html"}`;
-        fs.writeFileSync(path.join(opts.out, f), r.text);
+        fs.writeFileSync(path.join(opts.out, f), r.rc === 0 ? r.text : pageShell + r.text);
         return `<div class="panel ${t}">${r.rc === 0 ? `<img src="${attr(f)}" alt="">` : `<iframe sandbox="" referrerpolicy="no-referrer" src="${attr(f)}" title="${attr(f)}"></iframe>`}</div>`;
       });
       return `<section><h2>${esc(b)}</h2><div class="pair">${panels.join("")}</div></section>`;
     });
-    fs.writeFileSync(path.join(opts.out, "index.html"), `<!doctype html><meta charset="utf-8"><title>${esc(path.basename(file))}: preview</title><style>body{font:15px system-ui;margin:24px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.panel{padding:10px;border:1px solid #888;overflow:auto}.panel.light{background:#fff}.panel.dark{background:#1e1e1e}svg,img{max-width:100%;height:auto}iframe{width:100%;height:480px;border:0;background:transparent}pre{overflow:auto}</style><h1>${esc(path.basename(file))}</h1>${[...cards, ...fcards].join("\n")}`);
+    fs.writeFileSync(path.join(opts.out, "index.html"), `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self' file: data:; frame-src 'self' file:"><title>${esc(path.basename(file))}: preview</title><style>body{font:15px system-ui;margin:24px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.panel{padding:10px;border:1px solid #888;overflow:auto}.panel.light{background:#fff}.panel.dark{background:#1e1e1e}svg,img{max-width:100%;height:auto}iframe{width:100%;height:480px;border:0;background:transparent}pre{overflow:auto}</style><h1>${esc(path.basename(file))}</h1>${[...cards, ...fcards].join("\n")}`);
     console.log(`\npreview written to ${path.join(opts.out, "index.html")}`);
   }
   finish();
