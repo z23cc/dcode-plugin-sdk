@@ -1,5 +1,5 @@
 target/
 dist/
 build/
+release/
 *.key
-tmp-preview/

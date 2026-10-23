@@ -26,7 +26,7 @@ Copy this directory out of the repository, then:
 
 1. In `Cargo.toml`, change `name` to your plugin's name.
 2. In `plugin.json`, change:
-   - `id`: reverse-domain notation, lowercase letters, digits, `.` and `-`, at most 64 characters. It identifies your plugin for good, so pick it once, for example `io.github.your-name.text-box`.
+   - `id`: reverse-domain notation is recommended (`io.github.your-name.text-box`). The rule is `^[a-z0-9]+([.-][a-z0-9]+)*$`, at most 64 characters. It identifies your plugin for good, so pick it once.
    - `name`, `version`, `description`, `homepage`.
    - `renderBlock.languages`: the code-block languages you handle (1 to 16 entries; lowercase letters, digits, `+`, `-`). `mermaid` and `wireframe` are taken. A language can belong to only one installed plugin.
    - `publicKey`: see the next step. The value in the template belongs to nobody; no signature can match it.

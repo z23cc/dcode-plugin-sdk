@@ -267,7 +267,7 @@ These are all the functions of `wasi_snapshot_preview1`. A plugin may import any
 | `sched_yield` | Succeeds. |
 | The remaining 7 functions (`clock_res_get`, `poll_oneoff`, `proc_raise`, `sock_accept`, `sock_recv`, `sock_send`, `sock_shutdown`) | Return `ENOSYS` (52). They **do not trap**. |
 
-`fd_prestat_get` returning `EBADF` is not incidental. wasi-libc probes pre-opened directories at start-up, from fd 3 upwards, and stops only when it gets `EBADF`; any other error code makes it abort. That is why the host answers `EBADF` there.
+`fd_prestat_get` returning `EBADF` is not incidental. The first time a program opens a file by path (`fopen`, `open`, ...), wasi-libc probes pre-opened directories from fd 3 upwards, and stops only when it gets `EBADF`; any other error code makes it abort the call with `proc_exit(71)`, which is a plugin failure. (Checked with wasi-sdk 34: with `EBADF`, `fopen` fails with `ENOENT` and the program carries on; with `ENOSYS` the call aborts.) That is why the host answers `EBADF` there.
 
 Because no directory is pre-opened, a plugin cannot read or write any file; every attempt fails with an error code, and a program that handles errors normally keeps running. A C library built with wasi-sdk therefore installs and runs; it simply finds no files.
 
