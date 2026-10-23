@@ -1,0 +1,10 @@
+{
+  "id": "com.example.text-box",
+  "name": "Text Box",
+  "version": "0.1.0",
+  "abi": 1,
+  "description": "Draws the text of a ```textbox block inside a box. Template plugin.",
+  "homepage": "https://example.com/text-box",
+  "publicKey": "RWRc97Nm84XTJv7qi9b3TruYb7D1/cjylG9RkrdC11jlLC7X0svsnlYC",
+  "renderBlock": { "languages": ["textbox"] }
+}

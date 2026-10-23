@@ -1,0 +1,6 @@
+target/
+dist/
+
+# Never commit a signing key. If you keep keys near your project, keep them out
+# of git. (`minisign -G` writes ~/.minisign/minisign.key by default.)
+*.key

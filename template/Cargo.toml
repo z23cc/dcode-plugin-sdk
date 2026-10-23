@@ -1,0 +1,24 @@
+[package]
+name = "dcode-plugin-template"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+# A plugin is a WebAssembly library (a "reactor"), not a program.
+crate-type = ["cdylib"]
+
+[dependencies]
+# Used to read the options JSON. Any JSON crate works; this one is small enough.
+serde_json = "1"
+
+[profile.release]
+# A panic is a trap either way. `abort` keeps the unwinding machinery out of the
+# binary, which matters for a file the user has to download and trust.
+panic = "abort"
+lto = true
+opt-level = "s"
+codegen-units = 1
+# Drops debug info and the `name` section. The `dcode.plugin` manifest section
+# is kept: it is real data, not debug info.
+strip = true

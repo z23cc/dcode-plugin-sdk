@@ -1,0 +1,3 @@
+[build]
+# Makes a bare `cargo build --release` produce a plugin.
+target = "wasm32-unknown-unknown"
