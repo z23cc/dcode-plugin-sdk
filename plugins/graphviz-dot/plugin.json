@@ -1,0 +1,10 @@
+{
+  "id": "io.github.z23cc.graphviz-dot",
+  "name": "Graphviz DOT",
+  "version": "1.0.0",
+  "abi": 1,
+  "description": "Renders ```dot and ```graphviz code blocks as diagrams, using Graphviz.",
+  "homepage": "https://github.com/z23cc/dcode-plugin-sdk",
+  "publicKey": "RWR6z3GxMwiy6O87rHqNDHt03KxFOcJMYOiFIq2frdF88KjjodSH5mVE",
+  "renderBlock": { "languages": ["dot", "graphviz"] }
+}
