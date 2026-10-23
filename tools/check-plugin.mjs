@@ -427,7 +427,7 @@ function checkHtml(html) {
       const an = a[1].toLowerCase(), av = decode(a[2] ?? a[3] ?? a[4] ?? "");
       if (/^on[a-z]/.test(an)) seen.add(`event handler attribute ${a[1]} (the viewer removes it; there is no script anyway)`);
       else if (HTML_FORBIDDEN_ATTRS.has(an)) seen.add(`${a[1]} attribute (the viewer removes it${an === "href" || an === "xlink:href" ? "; a link is shown as plain text" : ""})`);
-      else if (HTML_DATA_ONLY_ATTRS.has(an) && !/^\s*data:/i.test(av)) seen.add(`${a[1]}="${av.slice(0, 40)}" (only data: URLs are kept)`);
+      else if (HTML_DATA_ONLY_ATTRS.has(an) && !/^data:/i.test(av.replace(/[\u0000-\u0020]/g, ""))) seen.add(`${a[1]}="${av.slice(0, 40)}" (only data: URLs are kept)`);
       else if (an === "style") css(av, "a style attribute");
     }
   }
