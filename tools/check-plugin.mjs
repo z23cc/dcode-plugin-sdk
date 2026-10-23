@@ -51,6 +51,8 @@ path_readlink path_remove_directory path_rename path_symlink path_unlink_file po
 random_get sched_yield sock_accept sock_recv sock_send sock_shutdown`.split(/\s+/),
 );
 const GENERIC_FONTS = new Set(["sans-serif", "serif", "monospace", "system-ui"]);
+// Presentation attributes that can refer to a resource (`marker*` is matched by prefix).
+const RESOURCE_ATTRS = new Set(["fill", "stroke", "mask", "filter", "clip-path", "cursor", "background", "background-image", "list-style-image", "content", "src", "shape-inside", "shape-outside", "border-image-source", "mask-image", "clip", "behavior"]);
 
 // ------------------------------------------------------------------ wasm bytes
 
@@ -95,7 +97,10 @@ function parseModule(bytes) {
     } else if (id === 1) {
       let [count, q] = leb(bytes, p);
       for (let i = 0; i < count; i++) {
-        if (bytes[q++] !== 0x60) throw new Error("unsupported type form");
+        // 0x60 is a function type. Anything else (0x5f struct, 0x5e array, 0x4e rec, 0x50/0x4f sub) is
+        // WebAssembly GC: the host refuses such modules, so there is no point in reading on.
+        const form = bytes[q++];
+        if (form !== 0x60) { m.gcForm = form; break; }
         let n; [n, q] = leb(bytes, q); const params = [...bytes.subarray(q, q + n)]; q += n;
         [n, q] = leb(bytes, q); const results = [...bytes.subarray(q, q + n)]; q += n;
         m.types.push({ params, results });
@@ -175,7 +180,7 @@ function verifyMinisign(wasm, sigText, publicKeyB64) {
   if (!crypto.verify(null, msg, key, sig)) throw new Error("the signature does not match the file (was it signed before the last build?)");
   const trusted = lines[2].slice("trusted comment: ".length);
   if (!crypto.verify(null, Buffer.concat([sig, Buffer.from(trusted, "utf8")]), key, global)) throw new Error("the trusted comment does not match its signature");
-  return { keyId: minisignKeyId(pub.keyId), algo };
+  return { keyId: minisignKeyId(pub.keyId), algo, publicKey: pub.key };
 }
 
 // -------------------------------------------------------------------- manifest
@@ -297,7 +302,8 @@ function parseXml(text) {
         if (raw.includes("<")) fail(`'<' in the value of ${a[0]}`, p);
         checkEntities(raw, p);
         if (a[0] in el.attrs) fail(`attribute ${a[0]} twice on <${el.name}>`, p);
-        el.attrs[a[0]] = raw.replace(/&(amp|lt|gt|quot|apos);/g, (_, n) => ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" })[n]);
+        // Decode references like a browser does before it reads the value: `&#117;rl(` is `url(`.
+        el.attrs[a[0]] = raw.replace(/&(?:(amp|lt|gt|quot|apos)|#(\d+)|#x([0-9a-fA-F]+));/g, (_, n, d, h) => (n ? ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" })[n] : String.fromCodePoint(d ? Number(d) : parseInt(h, 16))));
         p = end + 1;
       }
       cur.children.push(el);
@@ -337,6 +343,10 @@ function checkSvg(svg) {
       if (an === "id") { if (ids.has(v)) seen.add(`duplicate id ${JSON.stringify(v)}`); ids.add(v); }
       if (an === "font-family") for (const f of v.split(",").map((s) => s.trim().replace(/^["']|["']$/g, ""))) if (!GENERIC_FONTS.has(f)) seen.add(`font-family ${JSON.stringify(v)} (only sans-serif, serif, monospace, system-ui)`);
       for (const m of v.matchAll(/url\(\s*["']?\s*([^"')]*)/gi)) { if (!m[1].startsWith("#")) seen.add(`url(${m[1].slice(0, 40)}) (only url(#id) is allowed)`); else refs.push(m[1].slice(1)); }
+      if (v.includes("\\")) seen.add(`a backslash in ${k}="${v.slice(0, 40)}" (CSS escapes such as u\\rl( hide a url(); the host removes the attribute)`);
+      if (/(^|[^a-z-])(-webkit-)?image-set\(/i.test(v)) seen.add(`image-set( in ${k}="${v.slice(0, 40)}" (it loads an address; the host removes the attribute)`);
+      // In the attributes that can name a resource, only url(#id) may: no other function that loads one.
+      if ((RESOURCE_ATTRS.has(an) || an.startsWith("marker")) && /(^|[^a-z-])(image|cross-fade|element|paint|src)\(/i.test(v)) seen.add(`${k}="${v.slice(0, 40)}" (a resource reference must be exactly url(#id))`);
       if (/@import/i.test(v)) seen.add("@import");
       if (/javascript:/i.test(v)) seen.add("a javascript: URL");
       if (/(^|[\s,(])(NaN|-?Infinity)([\s,)]|$)/.test(v)) seen.add(`${k}="${v.slice(0, 40)}" (not a number)`);
@@ -533,6 +543,8 @@ if (isMainThread) {
   let compiled;
   try { compiled = new WebAssembly.Module(wasm); report.pass("module", `compiles on Node ${process.version}`); } catch (e) { report.fail("module", `does not compile: ${e.message}`); finish(); }
 
+  if (mod.gcForm !== undefined) report.fail("module", `the type section contains a GC type (form 0x${mod.gcForm.toString(16)}: struct, array, rec or sub): the host refuses WebAssembly GC modules, because GC objects live outside the linear memory and the 256 MiB limit would not apply to them`);
+  else report.pass("module", "the type section has function types only (no GC types)");
   report.check("memory", mod.memories.length === 1 && !mod.imports.some((i) => i.kind === "memory"), `exactly one memory, defined by the module (found ${mod.memories.length} defined, ${mod.imports.filter((i) => i.kind === "memory").length} imported)`);
   const mem = mod.memories[0];
   if (mem) {
@@ -545,6 +557,7 @@ if (isMainThread) {
   for (const [n, np, nr] of [["dcode_plugin_abi_version", 0, 1], ["dcode_alloc", 1, 1], ["dcode_free", 2, 0], ["dcode_render_block", 7, 1]]) {
     const e = exp.get(n);
     if (!e || e.kind !== "function") { report.fail("exports", `${n} is missing`); continue; }
+    if (mod.gcForm !== undefined) continue; // the types were not read
     const t = mod.types[mod.funcTypes[e.index]];
     const ok = t && t.params.length === np && t.params.every((x) => x === 0x7f) && t.results.length === nr && t.results.every((x) => x === 0x7f);
     report.check("exports", ok, `${n} has the type (${"i32, ".repeat(np).replace(/, $/, "")}) -> ${nr ? "i32" : "()"}`);
@@ -575,7 +588,10 @@ if (isMainThread) {
     else {
       try {
         const v = verifyMinisign(wasm, fs.readFileSync(sigPath, "utf8"), manifest.publicKey);
-        report.pass("signature", `valid for the manifest key; key id ${v.keyId} (as minisign prints it), ${v.algo === "ED" ? "pre-hashed" : "legacy"} signature`);
+        report.pass("signature", `valid for the manifest key; ${v.algo === "ED" ? "pre-hashed" : "legacy"} signature`);
+        console.log(`      key id      ${v.keyId}   (as minisign prints it; for display only: anyone can forge a key id)`);
+        console.log(`      public key  ${manifest.publicKey}`);
+        console.log(`      raw key     ${v.publicKey.toString("hex")}   (32 bytes: the plugin's identity; an update must be signed with exactly this key)`);
         const tampered = Buffer.from(wasm);
         tampered[tampered.length - 1] ^= 1;
         let rejected = false;
