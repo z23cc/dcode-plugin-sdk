@@ -1,0 +1,6 @@
+[build]
+# Makes a bare `cargo build --release` produce a plugin.
+target = "wasm32-wasip1"
+
+[target.wasm32-wasip1]
+rustflags = ["-C", "link-arg=--max-memory=268435456"]

@@ -1,0 +1,5 @@
+target/
+dist/
+
+# Never commit a signing key.
+*.key

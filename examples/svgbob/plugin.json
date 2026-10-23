@@ -1,0 +1,13 @@
+{
+  "id": "io.github.local.svgbob",
+  "name": "Svgbob",
+  "version": "0.1.0",
+  "abi": 1,
+  "description": "Renders bob ASCII-art code blocks as SVG using svgbob.",
+  "publicKey": "RWQ0saX0WGeVabSKRhKJ87lhlpasb8nu6UrG+Gfx1cesfuguJ6GK7i8L",
+  "renderBlock": {
+    "languages": [
+      "bob"
+    ]
+  }
+}
