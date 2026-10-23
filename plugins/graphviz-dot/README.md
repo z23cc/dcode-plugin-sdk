@@ -20,6 +20,7 @@ dcode plugin install --dev graphviz-dot.wasm    # a build you made yourself, uns
 - **Themes:** `theme: "dark"` turns the default black ink (lines, arrowheads, text, cluster borders) into light grey. Anything you set yourself is left alone. Two conveniences on top: text on a node with an explicit fill is black or white, whichever reads better, unless you set `fontcolor`; and ink inside a cluster follows the cluster's fill, so a `style=filled color=lightgrey` cluster stays readable on a dark page.
 - **Clusters, records, ports, `rank=same`, `rankdir`, `splines` (including `ortho`), edge labels, the full set of shapes and arrowheads** work as in Graphviz.
 - **Syntax errors** return `1` with Graphviz's message, for example `syntax error in line 4 near ';'`. Graphviz reports where it noticed the problem, which can be a line after the mistake (an unclosed `[` or string, a missing `}` at the end of the input).
+- **Gradient fills** (`fillcolor="red:blue"`, `style=radial`) keep their colours: Graphviz writes stop colours in a `style` attribute, which the host removes, so the plugin rewrites them as presentation attributes (`stop-color`, `stop-opacity`). The SVG contains no `style` attribute and no `<style>` element at all.
 - **Ids** in the SVG are prefixed with a hash of the source and theme, so several diagrams can share a page.
 - Graphviz warnings (unknown shape, unknown arrow type, ...) are written to stderr, which is the plugin log (see `fd_write` in [SPEC.md](../../SPEC.md)): the host keeps it for development builds only. The user never sees them.
 
@@ -74,7 +75,7 @@ The build is reproducible: compiling with the toolchain in two different directo
 | `Makefile` | The list of Graphviz sources and the compile and link flags |
 | `fetch-toolchain.sh` | Pinned, checksum-verified download of wasi-sdk and Graphviz |
 | `plugin.json` | The manifest |
-| `examples/` | The DOT inputs used to check the plugin: 26 that render and 6 with syntax errors |
+| `examples/` | The DOT inputs used to check the plugin: 27 that render and 6 with syntax errors |
 
 ### WebAssembly features used
 

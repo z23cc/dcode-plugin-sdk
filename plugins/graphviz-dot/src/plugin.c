@@ -348,6 +348,34 @@ static char *clean_svg(const char *in, size_t n, const char *prefix, size_t *out
       const char *end = memchr(p + 14, '"', left - 14);
       if (end) { i = (size_t)(end - in) + 1; continue; }
     }
+    /* The host removes `style` attributes (SPEC: SVG output). Graphviz writes
+     * gradient stops as style="stop-color:red;stop-opacity:1.;", which would
+     * turn black, so spell the declarations as presentation attributes. */
+    if (left >= 8 && starts(p, " style=\"")) {
+      const char *end = memchr(p + 8, '"', left - 8);
+      if (end) {
+        for (const char *q = p + 8; q < end;) {
+          const char *semi = memchr(q, ';', (size_t)(end - q));
+          if (semi == NULL) semi = end;
+          const char *colon = memchr(q, ':', (size_t)(semi - q));
+          size_t nlen = colon ? (size_t)(colon - q) : 0, k = 0;
+          while (k < nlen && ((q[k] >= 'a' && q[k] <= 'z') || q[k] == '-')) k++;
+          if (colon && nlen > 0 && k == nlen) {
+            const char *v = colon + 1;
+            size_t vlen = (size_t)(semi - v);
+            if (vlen && v[vlen - 1] == '.') vlen--; /* "1." -> "1" */
+            out[o++] = ' ';
+            memcpy(out + o, q, nlen); o += nlen;
+            memcpy(out + o, "=\"", 2); o += 2;
+            memcpy(out + o, v, vlen); o += vlen;
+            out[o++] = '"';
+          }
+          q = semi + 1;
+        }
+        i = (size_t)(end - in) + 1;
+        continue;
+      }
+    }
     if (left >= 4 && starts(p, "id=\"") && i > 0 && in[i - 1] == ' ') {
       memcpy(out + o, "id=\"", 4); o += 4;
       memcpy(out + o, prefix, plen); o += plen;

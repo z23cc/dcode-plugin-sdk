@@ -1,0 +1,16 @@
+// Gradient fills are the one place Graphviz writes a `style` attribute (stop colours);
+// the plugin turns it into presentation attributes.
+digraph G {
+  node [shape=box style=filled];
+  a [fillcolor="lightblue:white" gradientangle=90];
+  b [shape=ellipse style=radial fillcolor="yellow:orange"];
+  c [fillcolor="palegreen:white;0.3:lightgrey"];
+  subgraph cluster_x {
+    label="gradient cluster";
+    style=filled;
+    fillcolor="lightyellow:orange";
+    d; e;
+  }
+  a -> b -> c;
+  b -> d -> e;
+}

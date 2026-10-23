@@ -366,16 +366,27 @@ On return value `0`, `out` holds one complete SVG document.
 
 **What it MUST NOT contain**
 
-- `<script>`, `<foreignObject>`, and event handler attributes (`onclick`, `onload`, and so on);
-- references to anything outside the document: no `href`/`xlink:href` other than `#fragment` references, no `url()` other than `url(#fragment)`, no `@import`, no `<image>` pointing at an address, no `javascript:` URLs;
+- these elements: `<script>`, `<foreignObject>`, `<image>`, `<a>`, `<style>`, and the animation elements `<animate>`, `<animateMotion>`, `<animateTransform>` and `<set>`;
+- the `style` attribute on any element, and event handler attributes (`onclick`, `onload`, and so on). Use **presentation attributes** instead: `fill`, `stroke`, `stroke-width`, `stroke-dasharray`, `font-family`, `font-size`, `stop-color`, `opacity` and the like;
+- references to anything outside the document: no `href` or `xlink:href` except `#fragment` references, no `url()` except `url(#id)`, no `@import`, no `javascript:` URLs;
 - fonts other than the generic families `sans-serif`, `serif`, `monospace` and `system-ui`. There is no `@font-face` and no named font: the host cannot load one and the machine that displays the picture might not have it.
 
-The host sanitizes every SVG before showing it, and removes what it considers unsafe. That is a second line of defence, not permission to produce such content: **what the plugin outputs is the author's responsibility.** A picture that depends on removed content will be shown broken.
+**What the host does about it.** The host sanitizes every SVG before it shows it, and it **always** removes the following. A plugin MUST NOT depend on any of it:
 
-**Shared documents.** The host may place SVGs from several code blocks, and from several plugins, in one HTML document. The SVGs then share one namespace for `id`s and, if they contain `<style>`, for CSS rules. Therefore:
+| Removed | Why |
+| --- | --- |
+| The elements listed above | Scripts and `foreignObject` run or embed arbitrary content; `<image>` and `<a>` reach outside the document; animation can change what the picture shows after it was reviewed. `<style>` is removed because a CSS rule in it applies to the whole page, not only to your drawing, so one plugin could restyle the host's interface or another plugin's picture. |
+| The `style` attribute | The same reason: CSS in an attribute can position the picture over the host's interface (`position: fixed`), load resources (`url()`), or hide and restyle other content. Presentation attributes cannot do any of that. |
+| `href` and `xlink:href` unless the value starts with `#`; any attribute value with a `url()` that does not point at `#id` | Nothing may reach outside the document. |
+
+If nothing usable is left after sanitizing, that is, there is no `<svg>` root element, the host shows a **plugin failure**, not an empty picture.
+
+That is a second line of defence, not permission to produce such content: **what the plugin outputs is the author's responsibility.** A picture that depends on removed content is shown broken. A common trap: a gradient whose colours are written as `<stop style="stop-color:red">` loses its colours, because the `style` attribute is removed; write `<stop stop-color="red"/>`.
+
+**Shared documents.** The host may place SVGs from several code blocks, and from several plugins, in one HTML document. The SVGs then share one namespace for `id`s. Therefore:
 
 - Give every element `id` a prefix derived from the source text, for example a hash of `src` and `theme` (`d3a1c9e4-node1`). Equal inputs must still give equal output. Do not use a fixed prefix or a counter that restarts: two blocks would share ids.
-- Prefer presentation attributes (`fill`, `stroke`, `font-family`) over `<style>` blocks. If you use `<style>`, scope every rule to your own prefixed ids or classes.
+- Do not use `<style>` blocks or `style` attributes. The host removes them (see above), and they would leak into other pictures if it did not.
 
 ## Versioning
 
@@ -419,7 +430,7 @@ Go through this before you publish a plugin.
 **Output**
 
 - [ ] The SVG is well-formed XML, with an `svg` root element in the SVG namespace, and escaped text.
-- [ ] No script, no `foreignObject`, no event handler attributes, no external references.
+- [ ] No `<script>`, `<foreignObject>`, `<image>`, `<a>`, `<style>` or animation element; no `style` attribute and no event handler attribute; no `href` or `url()` that points outside the document. Colours and strokes are presentation attributes.
 - [ ] Only generic font families.
 - [ ] Both themes are drawn and readable on their surfaces; the SVG has no full-size background.
 - [ ] Ids are prefixed with something derived from the source.
