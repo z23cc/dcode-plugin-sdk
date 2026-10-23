@@ -31,7 +31,9 @@ dcode plugin install --dev graphviz-dot.wasm    # a build you made yourself, uns
 | --- | --- |
 | HTML-like labels (`label=<...>`) | Returns `1`: "HTML-like labels (label=<...>) are not supported by this plugin; use plain or record labels". This build has no XML parser (no expat). |
 | Other layout engines (`neato`, `fdp`, `circo`, ...) | The `layout` attribute is ignored and `dot` is used. |
-| `URL`, `href`, `image`, `stylesheet`, `shapefile` and similar | Blanked before rendering, so the SVG has no links, images or external references. |
+| `URL`, `href`, `tooltip`, `target`, `image`, `stylesheet`, `shapefile` and similar (also on clusters, edge labels and edge ends) | Blanked before rendering, so the SVG has no links, images or external references. |
+| `id` and `class` | Blanked. Graphviz copies their text into attribute values unchanged, where a backslash or `url(` is not allowed; Graphviz numbers the elements itself. |
+| `fontname` | Characters other than letters, digits, space and `,._:-` become `_` (Graphviz writes the name into an attribute unescaped); the result is mapped to a generic family. |
 | Other output formats | SVG only. |
 | Absurd numeric values | `minlen`, `penwidth`, `margin`, `ratio`, `peripheries`, ... are clamped to a generous maximum (for example `minlen` 100, `penwidth` 20). Without it a value like `minlen=99999999` or `margin=inf` hangs or crashes Graphviz. |
 
@@ -76,7 +78,7 @@ The build is reproducible: compiling with the toolchain in two different directo
 | `Makefile` | The list of Graphviz sources and the compile and link flags |
 | `fetch-toolchain.sh` | Pinned, checksum-verified download of wasi-sdk and Graphviz |
 | `plugin.json` | The manifest |
-| `examples/` | The DOT inputs used to check the plugin: 27 that render and 6 with syntax errors |
+| `examples/` | The DOT inputs used to check the plugin: 28 that render and 6 with syntax errors |
 
 ### WebAssembly features used
 

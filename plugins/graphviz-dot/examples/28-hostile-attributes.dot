@@ -1,0 +1,14 @@
+// Text that must never reach an attribute of the SVG: ids, classes, links, tooltips, font names
+// and cluster attributes with backslashes, url(), image-set() and quotes. The plugin drops or
+// cleans them; the checker fails if one comes through.
+digraph "g\\h" {
+  graph [class="gc\\x" id="gid\\y" URL="http://example.com/g"];
+  node [fontname="x\" onload=\"y" labeltooltip="tt"];
+  subgraph cluster_q {
+    label="u\\rl(http://example.com/)";
+    URL="http://example.com/c";
+    tooltip="tt";
+    a [class="url(http://example.com/x) image-set(z)" id="p\\q" URL="http://example.com/a"];
+  }
+  a -> b [class="e\\z" edgetooltip="t" fontname="a<b>c" label="x' onload='y"];
+}

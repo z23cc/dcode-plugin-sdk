@@ -251,28 +251,79 @@ static void apply_theme(Agraph_t *g, int dark) {
   for (Agnode_t *n = agfstnode(g); n; n = agnxtnode(g, n)) fix_text_on_fill(n, g);
 }
 
-/* Links, images and style sheets would put external references into the SVG.
- * Blank every attribute that can produce one before rendering. A `layout=`
- * attribute would pick an engine this module does not contain, so it is
- * pinned to dot, the only engine here. */
+static void blank_graphs(Agraph_t *g, Agsym_t *sym) {
+  agxset(g, sym, "");
+  for (Agraph_t *sg = agfstsubg(g); sg; sg = agnxtsubg(sg)) blank_graphs(sg, sym);
+}
+
+/* Attributes whose text would end up in the SVG where it must not be:
+ *  - links, images and style sheets (external references; clusters too);
+ *  - `id` and `class`, which Graphviz copies into attribute values unchanged. The
+ *    SPEC allows no backslash or image-set( in an attribute value, and a user
+ *    chosen id would also clash with the prefixed ones. Graphviz then numbers
+ *    the elements itself (node1, edge2, ...) and keeps its own class names.
+ * A `layout=` attribute would pick an engine this module does not contain, so
+ * it is pinned to dot, the only engine here. */
 static void blank_external_attrs(Agraph_t *g) {
   Agsym_t *engine = agattr(g, AGRAPH, "layout", NULL);
   if (engine) agxset(g, engine, "dot");
   static const char *names[] = {"URL", "href", "labelURL", "labelhref", "headURL", "headhref",
                                 "tailURL", "tailhref", "edgeURL", "edgehref", "image",
-                                "stylesheet", "shapefile", "target", "tooltip", NULL};
+                                "stylesheet", "shapefile", "target", "tooltip", "labeltarget", "labeltooltip",
+                                "headtarget", "headtooltip", "tailtarget", "tailtooltip", "edgetarget",
+                                "edgetooltip", "id", "class", NULL};
   for (int kind = 0; kind < 3; kind++) {
     for (const char **p = names; *p; p++) {
       Agsym_t *sym = agattr(g, kind, (char *)*p, NULL);
       if (sym == NULL) continue;
       agattr(g, kind, (char *)*p, "");
       if (kind == AGRAPH) {
-        agxset(g, sym, "");
+        blank_graphs(g, sym);
         continue;
       }
       for (Agnode_t *n = agfstnode(g); n; n = agnxtnode(g, n)) {
         if (kind == AGNODE) agxset(n, sym, "");
         else for (Agedge_t *e = agfstout(g, n); e; e = agnxtout(g, e)) agxset(e, sym, "");
+      }
+    }
+  }
+}
+
+/* Graphviz writes a font name into `font-family="..."` without escaping it, so a
+ * name that contains a quote or an angle bracket would inject markup. Keep the
+ * characters real font names use and turn the rest into '_'. */
+static void scrub_font_value(void *obj, Agsym_t *sym) {
+  const char *v = agxget(obj, sym);
+  char buf[256];
+  size_t i = 0;
+  for (; v[i] && i < sizeof buf - 1; i++) {
+    unsigned char c = (unsigned char)v[i];
+    int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ' ' || c == ',' ||
+             c == '.' || c == '_' || c == ':' || c == '-';
+    buf[i] = ok ? (char)c : '_';
+  }
+  buf[i] = '\0';
+  agxset(obj, sym, buf);
+}
+
+static void scrub_font_graphs(Agraph_t *g, Agsym_t *sym) {
+  scrub_font_value(g, sym);
+  for (Agraph_t *sg = agfstsubg(g); sg; sg = agnxtsubg(sg)) scrub_font_graphs(sg, sym);
+}
+
+static void scrub_font_names(Agraph_t *g) {
+  static const char *names[] = {"fontname", "labelfontname", "fontnames", NULL};
+  for (int kind = 0; kind < 3; kind++) {
+    for (const char **p = names; *p; p++) {
+      Agsym_t *sym = agattr(g, kind, (char *)*p, NULL);
+      if (sym == NULL) continue;
+      if (kind == AGRAPH) {
+        scrub_font_graphs(g, sym);
+        continue;
+      }
+      for (Agnode_t *n = agfstnode(g); n; n = agnxtnode(g, n)) {
+        if (kind == AGNODE) scrub_font_value(n, sym);
+        else for (Agedge_t *e = agfstout(g, n); e; e = agnxtout(g, e)) scrub_font_value(e, sym);
       }
     }
   }
@@ -514,6 +565,7 @@ int32_t dcode_render_block(const uint8_t *lang_ptr, size_t lang_len,
   apply_theme(g, dark);
   blank_external_attrs(g);
   clamp_numeric_attrs(g);
+  scrub_font_names(g);
   if (gvLayout(gvc, g, "dot") != 0 || saw_error) return fail(out, "layout failed");
   char *data = NULL;
   size_t len = 0;
