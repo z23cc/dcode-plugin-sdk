@@ -44,9 +44,10 @@
 // disk. Its author diagnostics (arguments, export types, return values, SVG and HTML content) are
 // stricter than the host's install check on purpose, so do not compare their order or wording with
 // `dcode plugin install`. It does not sanitize: the host hands on the plugin's SVG or HTML as it
-// is, and the DCode client cleans and sandboxes it. It compiles with the Node that runs it; use
-// Node 24 (the host's engine) to see what the host's engine accepts. The cases run in up to four
-// parallel workers, each with its own 5 s timer: not the host's queue, compile cache or GUI.
+// is, and the DCode client cleans and sandboxes it. It compiles with the Node that runs it: to see
+// what a given host's engine accepts, run it on that host's own Node and V8 (SPEC.md's feature table
+// was measured on Node 24.21.0, V8 13.6). The cases run in up to four parallel workers, each with
+// its own 5 s timer: not the host's queue, compile cache or GUI.
 //
 // Exit status 0: no FAIL. WARN lines are advice.
 
@@ -669,7 +670,7 @@ function usage() {
                 dns-prefetch and preconnect) and is shown in a sandboxed frame. Nothing else is sanitized, as the viewer
                 would: a link stays in the page, and a browser may look up its host name ahead of time
   --fuzz        how many odd inputs to try, for each extension point the plugin has (default 40)
-  --show-log    print what the plugin wrote with fd_write`);
+  --show-log    print what the plugin wrote with fd_write (not for a call that trapped or timed out: its log is lost here)`);
   process.exit(2);
 }
 

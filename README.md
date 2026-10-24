@@ -49,8 +49,8 @@ If you wrap an existing rendering library, expect to adapt its output: most prod
 - **Not a promise that every machine installs it.** The checker cannot see the public key a host remembers for your `id`, the languages and extensions other installed plugins already hold, or the state of the disk.
 - **Stricter than the host on purpose.** It also rejects wrong argument handling, wrong export types, wrong return values and SVG or HTML content the viewer would remove. Do not compare the order or wording of its messages with `dcode plugin install`.
 - **No sanitizing.** The host returns your SVG or HTML as you wrote it (it only limits the size and keeps HTML out of code blocks); the DCode client sanitizes the SVG and sandboxes the HTML. `--out` shows your output under the viewer's content-security policy but is not the client.
-- **One engine at a time.** The checker compiles with the Node that runs it, so a Node older than the host's may refuse a feature the host accepts. The released DCode host runs Node 24; a host run from source runs under Bun. [SPEC.md](SPEC.md#webassembly-features) says which engine measured what.
-- **Not a host simulation.** Up to four cases run in parallel, each in its own worker with its own 5 s timer: not the host's queue, compiled-module cache or GUI.
+- **One engine at a time.** The checker compiles with the Node that runs it, so a different Node than your target host's may accept or refuse a feature differently: to predict a given host, run the checker on that host's own Node and V8. The feature table in [SPEC.md](SPEC.md#webassembly-features) was measured on Node 24.21.0 (V8 13.6); which Node a DCode build embeds comes from that build, and a host run from source runs under Bun.
+- **Not a host simulation.** Up to four cases run in parallel, each in its own worker with its own 5 s timer: not the host's queue, compiled-module cache or GUI. `--show-log` prints what a call wrote with `fd_write` only when the call returns; the log of a call that traps or times out is not shown.
 
 ## Sign
 
