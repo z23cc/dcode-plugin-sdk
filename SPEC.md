@@ -237,7 +237,7 @@ The plugin does not report these and cannot influence the message:
 
 ## `dcode_render_file` and return values
 
-*Since DCode **[version to be filled in when this ships]**. Older versions do not know `renderFile`; see [Manifest](#manifest) for how they treat such a plugin.*
+*Since DCode **0.2.2**. Older versions do not know `renderFile`; see [Manifest](#manifest) for how they treat such a plugin.*
 
 ```c
 int32_t dcode_render_file(name, data, opts, out);
