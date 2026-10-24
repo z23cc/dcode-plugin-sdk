@@ -13,13 +13,14 @@
 //   * reads the module and checks its shape: one 32-bit memory, the exports the
 //     manifest calls for (`dcode_render_block` for `renderBlock`, `dcode_render_file`
 //     for `renderFile`) and their types, no `_start`, the import allow-list, the
-//     manifest section and the manifest rules (including the formats DCode previews
-//     itself, which a plugin may not declare);
+//     manifest section and the manifest rules (the field limits, counted in UTF-16
+//     code units, and the formats DCode previews itself, which a plugin may not declare);
 //   * verifies the minisign signature against the key in the manifest (skipped
 //     with --dev);
-//   * runs the plugin the way the host does, in a fresh instance for every call
-//     with a 5 s time limit and the memory maximum rewritten to 256 MiB, behind
-//     WASI stubs that give it no capability;
+//   * runs the plugin in a fresh instance for every call with a 5 s time limit and the
+//     memory maximum rewritten to 256 MiB (linear memory only), behind a port of the
+//     host's WASI layer: no capability, and the same answers (return codes, the fixed
+//     random stream, EFAULT for a bad pointer, the 16 KiB log);
 //   * checks the ABI: dcode_plugin_abi_version, dcode_alloc/dcode_free, return
 //     codes, the `out` record (written unaligned, left alone on -1 and -2),
 //     inputs left unchanged, options handling;
@@ -36,6 +37,16 @@
 // (`renderFile`); `--bad-file-sample` a file it must answer with 1 and a message
 // (for example a `.db` that is not a database). Without samples only the checks
 // that do not need a valid input run, and the tool says so.
+//
+// What a pass means: the module is in order and its manifest follows the rules the host applies.
+// It does not promise that a given DCode installs it: the checker cannot see the key a host pinned
+// for this `id`, the languages and extensions other installed plugins hold, or the state of the
+// disk. Its author diagnostics (arguments, export types, return values, SVG and HTML content) are
+// stricter than the host's install check on purpose, so do not compare their order or wording with
+// `dcode plugin install`. It does not sanitize: the host hands on the plugin's SVG or HTML as it
+// is, and the DCode client cleans and sandboxes it. It compiles with the Node that runs it; use
+// Node 24 (the host's engine) to see what the host's engine accepts. The cases run in up to four
+// parallel workers, each with its own 5 s timer: not the host's queue, compile cache or GUI.
 //
 // Exit status 0: no FAIL. WARN lines are advice.
 
@@ -176,16 +187,26 @@ function capMemory(bytes, mod) {
 function minisignKeyId(bytes8) {
   return Buffer.from(bytes8).reverse().toString("hex").toUpperCase(); // as minisign prints it
 }
+/** Base64 the way the host reads it: trimmed, trailing "=" ignored, and what `atob` decodes must encode back to the same text.
+ *  `Buffer.from(text, "base64")` also takes line breaks, spaces, the URL-safe alphabet and stray characters; the host refuses them. */
+function strictBase64(text, what) {
+  if (typeof text !== "string") throw new Error(`${what} must be a string`);
+  const unpadded = text.trim().replace(/=+$/, "");
+  let binary;
+  try { binary = atob(unpadded); } catch { throw new Error(`${what} is not valid base64`); }
+  if (btoa(binary).replace(/=+$/, "") !== unpadded) throw new Error(`${what} is not valid base64`);
+  return Buffer.from(binary, "latin1");
+}
 function readPublicKey(b64) {
-  const raw = Buffer.from(b64, "base64");
+  const raw = strictBase64(b64, "public key");
   if (raw.length !== 42 || raw.subarray(0, 2).toString("ascii") !== "Ed") throw new Error("not a minisign public key (expected 42 bytes starting with 'Ed')");
   return { keyId: raw.subarray(2, 10), key: raw.subarray(10) };
 }
 function verifyMinisign(wasm, sigText, publicKeyB64) {
   const lines = sigText.split(/\r?\n/);
   if (!lines[0]?.startsWith("untrusted comment: ") || !lines[2]?.startsWith("trusted comment: ")) throw new Error("malformed .minisig");
-  const raw = Buffer.from(lines[1], "base64");
-  const global = Buffer.from(lines[3] ?? "", "base64");
+  const raw = strictBase64(lines[1], "signature line");
+  const global = strictBase64(lines[3] ?? "", "global signature line");
   if (raw.length !== 74 || global.length !== 64) throw new Error("malformed .minisig (bad lengths)");
   const algo = raw.subarray(0, 2).toString("ascii");
   if (algo !== "ED" && algo !== "Ed") throw new Error(`unknown signature algorithm ${JSON.stringify(algo)}`);
@@ -212,11 +233,14 @@ function checkManifest(text, report) {
   }
   if (m === null || typeof m !== "object" || Array.isArray(m)) { report.fail("manifest", "the manifest must be a JSON object"); return null; }
   const nonEmpty = (k) => typeof m[k] === "string" && m[k].length > 0;
+  // Lengths are UTF-16 code units (JavaScript's String.length), as the host's schema counts them: not bytes, not code points.
+  const within = (k, max) => typeof m[k] === "string" && m[k].length <= max;
+  const has = (k) => (typeof m[k] === "string" ? ` (has ${m[k].length})` : "");
   const rule = (ok, what) => (ok ? report.pass("manifest", what) : report.fail("manifest", what));
   rule(nonEmpty("id") && m.id.length <= 64 && /^[a-z0-9]+([.-][a-z0-9]+)*$/.test(m.id), `id ${JSON.stringify(m.id)} matches ^[a-z0-9]+([.-][a-z0-9]+)*$ and is at most 64 characters`);
   if (nonEmpty("id") && !m.id.includes(".")) report.warn("manifest", "id has no '.': reverse-domain notation (io.github.you.name) is recommended");
-  rule(nonEmpty("name"), "name is a non-empty string");
-  rule(nonEmpty("version") && /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.test(m.version), `version ${JSON.stringify(m.version)} is a semantic version`);
+  rule(nonEmpty("name") && within("name", 100), `name is a non-empty string of at most 100 UTF-16 code units${has("name")}`);
+  rule(within("version", 64) && /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.test(m.version), `version ${JSON.stringify(m.version)} is a semantic version of at most 64 UTF-16 code units${has("version")}`);
   rule(m.abi === 1, "abi is 1");
   try { readPublicKey(m.publicKey); report.pass("manifest", "publicKey is a minisign public key"); } catch (e) { report.fail("manifest", `publicKey: ${e.message}`); }
   const hasBlock = m.renderBlock !== undefined, hasFile = m.renderFile !== undefined;
@@ -226,7 +250,7 @@ function checkManifest(text, report) {
     if (!Array.isArray(langs) || langs.length < 1 || langs.length > 16) report.fail("manifest", "renderBlock.languages must have 1 to 16 entries");
     else {
       for (const l of langs) {
-        if (typeof l !== "string" || !/^[a-z0-9+-]+$/.test(l)) report.fail("manifest", `language ${JSON.stringify(l)}: only lowercase letters, digits, + and -`);
+        if (typeof l !== "string" || l.length > 32 || !/^[a-z0-9+-]+$/.test(l)) report.fail("manifest", `language ${JSON.stringify(l)}: only lowercase letters, digits, + and -; at most 32 characters`);
         else if (l === "mermaid" || l === "wireframe") report.pass("manifest", `language ${l} is allowed; an enabled plugin draws it instead of DCode`);
         else report.pass("manifest", `language ${l} is allowed`);
       }
@@ -245,7 +269,13 @@ function checkManifest(text, report) {
       rule(new Set(exts).size === exts.length, "no extension is listed twice");
     }
   }
-  for (const k of ["description", "homepage"]) if (k in m && typeof m[k] !== "string") report.fail("manifest", `${k} must be a string`);
+  for (const [k, max] of [["description", 2000], ["homepage", 500]]) if (k in m) rule(within(k, max), `${k} is a string of at most ${max} UTF-16 code units${has(k)}`);
+  if (typeof m.homepage === "string" && m.homepage !== "") {
+    // The host parses it with `new URL` and accepts only http: and https: (an empty homepage means none).
+    let ok = false;
+    try { const protocol = new URL(m.homepage).protocol; ok = protocol === "http:" || protocol === "https:"; } catch { /* not a URL */ }
+    rule(ok, `homepage ${JSON.stringify(m.homepage.slice(0, 60))} is an http(s) URL that new URL() accepts`);
+  }
   return m;
 }
 
@@ -361,7 +391,7 @@ function checkSvg(svg) {
   const local = (n) => n.replace(/^.*:/, "");
   if (local(root.name) !== "svg") fails.push(`the root element is <${root.name}>, not <svg>`);
   if (root.attrs.xmlns !== "http://www.w3.org/2000/svg") fails.push('the root element needs xmlns="http://www.w3.org/2000/svg"');
-  if (!root.attrs.viewBox) warns.push("no viewBox: the host cannot scale the picture");
+  if (!root.attrs.viewBox) warns.push("no viewBox: the viewer cannot scale the picture");
   if (!root.attrs.width || !root.attrs.height) warns.push("no width/height on the root element");
   const FORBIDDEN = new Set(["script", "foreignobject", "image", "a", "style", "animate", "animatemotion", "animatetransform", "set"]);
   const ids = new Set(), refs = [];
@@ -377,8 +407,8 @@ function checkSvg(svg) {
       if (an === "id") { if (ids.has(v)) seen.add(`duplicate id ${JSON.stringify(v)}`); ids.add(v); }
       if (an === "font-family") for (const f of v.split(",").map((s) => s.trim().replace(/^["']|["']$/g, ""))) if (!GENERIC_FONTS.has(f)) seen.add(`font-family ${JSON.stringify(v)} (only sans-serif, serif, monospace, system-ui)`);
       for (const m of v.matchAll(/url\(\s*["']?\s*([^"')]*)/gi)) { if (!m[1].startsWith("#")) seen.add(`url(${m[1].slice(0, 40)}) (only url(#id) is allowed)`); else refs.push(m[1].slice(1)); }
-      if (v.includes("\\")) seen.add(`a backslash in ${k}="${v.slice(0, 40)}" (CSS escapes such as u\\rl( hide a url(); the host removes the attribute)`);
-      if (/(^|[^a-z-])(-webkit-)?image-set\(/i.test(v)) seen.add(`image-set( in ${k}="${v.slice(0, 40)}" (it loads an address; the host removes the attribute)`);
+      if (v.includes("\\")) seen.add(`a backslash in ${k}="${v.slice(0, 40)}" (CSS escapes such as u\\rl( hide a url(); the viewer removes the attribute)`);
+      if (/(^|[^a-z-])(-webkit-)?image-set\(/i.test(v)) seen.add(`image-set( in ${k}="${v.slice(0, 40)}" (it loads an address; the viewer removes the attribute)`);
       // In the attributes that can name a resource, only url(#id) may: no other function that loads one.
       if ((RESOURCE_ATTRS.has(an) || an.startsWith("marker")) && /(^|[^a-z-])(image|cross-fade|element|paint|src)\(/i.test(v)) seen.add(`${k}="${v.slice(0, 40)}" (a resource reference must be exactly url(#id))`);
       if (/@import/i.test(v)) seen.add("@import");
@@ -393,7 +423,7 @@ function checkSvg(svg) {
   const w = parseFloat(root.attrs.width), h = parseFloat(root.attrs.height);
   const hasBackdrop = (el) => local(el.name) === "rect" && ((el.attrs.width === "100%" && el.attrs.height === "100%") || (Number.isFinite(w) && parseFloat(el.attrs.width) >= w - 1 && parseFloat(el.attrs.height) >= h - 1 && parseFloat(el.attrs.x ?? 0) <= 1)) && (el.attrs.fill ?? "black") !== "none";
   const findBackdrop = (el) => hasBackdrop(el) || el.children.some(findBackdrop);
-  if (root.children.some(findBackdrop)) warns.push("a rectangle covers the whole picture: SPEC.md asks for no full-size background (the host draws the surface)");
+  if (root.children.some(findBackdrop)) warns.push("a rectangle covers the whole picture: SPEC.md asks for no full-size background (the viewer draws the surface)");
   return { fails, warns };
 }
 
@@ -450,39 +480,86 @@ function checkHtml(html) {
 
 // ----------------------------------------------------------------- the runner
 
-/** Host-side stand-in for the WASI layer described in SPEC.md. */
-function wasiStubs(getMemory, log) {
-  let seed = 0x9e3779b9;
+/**
+ * The WASI layer of SPEC.md "Imports and WASI", written to answer like the host's (DCode's `wasi-stub.ts`): the same return codes,
+ * memory writes and log. Pointers and lengths are unsigned 32-bit; memory that is missing (the start section runs before the
+ * instance has one) or too small gives EFAULT (21) and never an exception; `random_get` is the host's fixed xorshift32 stream
+ * (not secret); the log keeps the first 16 KiB of bytes and is decoded as UTF-8 once, at the end, so a character split between
+ * iovecs or calls decodes whole. Every call gets a new one: it keeps nothing from a previous case and grants no capability.
+ */
+function createWasiStub(names) {
+  const EBADF = 8, EFAULT = 21, ENOSYS = 52;
+  let memory = null;
+  const chunks = [];
   let logged = 0;
-  const view = () => new DataView(getMemory().buffer);
-  const fns = {
-    fd_write(fd, iovs, n, nw) {
-      if (fd !== 1 && fd !== 2) return 8;
+  let randomState = 0x9e3779b9;
+  // Read memory.buffer afresh at every use: a grow detaches the old one.
+  const view = () => (memory === null ? null : new DataView(memory.buffer));
+  const inRange = (ptr, length) => memory !== null && ptr + length <= memory.buffer.byteLength;
+  const writeU32 = (ptrArg, value) => {
+    const ptr = ptrArg >>> 0;
+    const data = view();
+    if (data === null || !inRange(ptr, 4)) return EFAULT;
+    data.setUint32(ptr, value, true);
+    return 0;
+  };
+  const known = {
+    fd_write(fd, iovsArg, countArg, written) {
+      if (fd !== 1 && fd !== 2) return EBADF;
+      const iovs = iovsArg >>> 0, count = countArg >>> 0;
+      const data = view();
+      if (data === null) return EFAULT;
       let total = 0;
-      for (let i = 0; i < n; i++) {
-        const ptr = view().getUint32(iovs + i * 8, true), len = view().getUint32(iovs + i * 8 + 4, true);
-        const keep = Math.max(0, Math.min(len, LOG_LIMIT - logged));
-        if (keep) log.push(Buffer.from(getMemory().buffer, ptr, keep).toString("utf8"));
-        logged += keep;
-        total += len;
+      for (let i = 0; i < count; i++) {
+        const entry = iovs + i * 8;
+        if (!inRange(entry, 8)) return EFAULT;
+        const ptr = data.getUint32(entry, true), length = data.getUint32(entry + 4, true);
+        if (!inRange(ptr, length)) return EFAULT;
+        const room = LOG_LIMIT - logged;
+        if (room > 0 && length > 0) {
+          const keep = Math.min(room, length);
+          chunks.push(new Uint8Array(memory.buffer, ptr, keep).slice());
+          logged += keep;
+        }
+        total += length; // the full length even when the log is full: a libc that sees a short write retries it for ever
       }
-      view().setUint32(nw, total, true);
+      return writeU32(written, total);
+    },
+    random_get(ptrArg, lengthArg) {
+      const ptr = ptrArg >>> 0, length = lengthArg >>> 0;
+      if (!inRange(ptr, length)) return EFAULT;
+      const out = new Uint8Array(memory.buffer, ptr, length);
+      for (let i = 0; i < length; i++) {
+        randomState ^= randomState << 13; // xorshift32
+        randomState ^= randomState >>> 17;
+        randomState ^= randomState << 5;
+        out[i] = randomState & 0xff;
+      }
       return 0;
     },
-    random_get(ptr, len) {
-      const b = new Uint8Array(getMemory().buffer, ptr, len);
-      for (let i = 0; i < len; i++) { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; b[i] = seed >>> 24; }
+    clock_time_get(_id, _precision, out) {
+      const data = view();
+      if (data === null || !inRange(out >>> 0, 8)) return EFAULT;
+      data.setBigUint64(out >>> 0, 0n, true);
       return 0;
     },
-    clock_time_get(_id, _prec, out) { view().setBigUint64(out, 0n, true); return 0; },
-    args_sizes_get(a, b) { view().setUint32(a, 0, true); view().setUint32(b, 0, true); return 0; },
-    environ_sizes_get(a, b) { view().setUint32(a, 0, true); view().setUint32(b, 0, true); return 0; },
+    args_sizes_get: (count, size) => writeU32(count, 0) || writeU32(size, 0),
     args_get: () => 0,
+    environ_sizes_get: (count, size) => writeU32(count, 0) || writeU32(size, 0),
     environ_get: () => 0,
     sched_yield: () => 0,
     proc_exit(code) { throw new Error(`proc_exit(${code}) is a plugin failure`); },
   };
-  return new Proxy(fns, { get: (t, k) => t[k] ?? (() => (/^(fd|path)_/.test(String(k)) ? 8 : 52)) });
+  const imports = {};
+  for (const name of names) {
+    if (Object.hasOwn(known, name)) imports[name] = known[name];
+    else if (WASI_FUNCS.has(name)) imports[name] = () => (/^(fd|path)_/.test(name) ? EBADF : ENOSYS);
+  }
+  return {
+    imports,
+    bindMemory(next) { memory = next; },
+    log: () => new TextDecoder().decode(Buffer.concat(chunks)),
+  };
 }
 
 const enc = new TextEncoder();
@@ -491,17 +568,16 @@ const asBytes = (v) => (typeof v === "string" ? enc.encode(v) : Uint8Array.from(
 /** Runs one case in a fresh instance. Everything it can verify about the call, it verifies here. */
 function runCase(mod, c) {
   const problems = [];
-  const log = [];
-  let memory;
   const t0 = performance.now();
-  const imports = WebAssembly.Module.imports(mod).length ? { wasi_snapshot_preview1: wasiStubs(() => memory, log) } : {};
-  const inst = new WebAssembly.Instance(mod, imports);
-  memory = inst.exports.memory;
+  const wasi = createWasiStub(WebAssembly.Module.imports(mod).filter((i) => i.module === "wasi_snapshot_preview1").map((i) => i.name));
+  const inst = new WebAssembly.Instance(mod, { wasi_snapshot_preview1: wasi.imports });
+  const memory = inst.exports.memory;
+  wasi.bindMemory(memory); // like the host: after instantiation, so a start section sees no memory (EFAULT) but _initialize does
   inst.exports._initialize?.();
   const { dcode_plugin_abi_version: version, dcode_alloc: alloc, dcode_free: free } = inst.exports;
   const isFile = c.kind === "file";
   const render = isFile ? inst.exports.dcode_render_file : inst.exports.dcode_render_block;
-  const done = (extra) => ({ problems, log: log.join(""), ms: performance.now() - t0, memBytes: memory.buffer.byteLength, ...extra });
+  const done = (extra) => ({ problems, log: wasi.log(), ms: performance.now() - t0, memBytes: memory.buffer.byteLength, ...extra });
 
   if (c.kind === "alloc") {
     const abi = version();

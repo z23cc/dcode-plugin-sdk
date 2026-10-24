@@ -60,11 +60,11 @@ A plugin MUST be a WebAssembly **core module**. It MUST NOT be a component. It c
 
 ## WebAssembly features
 
-The host compiles a plugin with the WebAssembly engine of Node.js 24 (V8 13.6), with default settings and no flags. A module that uses something the engine does not accept fails to compile and is **refused at install time**. On top of that the host refuses the modules marked below, and the memory rules in [Module shape](#module-shape) apply.
+The released DCode host compiles a plugin with the WebAssembly engine of Node.js 24 (V8 13.6), with default settings and no flags. A module that uses something the engine does not accept fails to compile and is **refused at install time**. On top of that the host refuses the modules marked below, and the memory rules in [Module shape](#module-shape) apply.
 
-Compilation was checked on Node 24.21.0 with one small module per feature:
+**Which engine the table describes.** Compilation was checked on Node 24.21.0 (V8 13.6.233.17) with one small module per feature; that is the version DCode pins for the released host. Two other engines can meet a plugin, and the table does not describe them: `tools/check-plugin.mjs` compiles with whichever Node runs it (it starts on Node 18 or newer, but an older V8 may refuse a feature listed as accepted here, so run it on Node 24 to see what the host's engine says), and a host started from source (a development run) uses Bun, whose engine is JavaScriptCore, on which nothing here was measured.
 
-| Feature | Accepted by the engine | Notes |
+| Feature | Accepted by Node 24.21.0 | Notes |
 | --- | --- | --- |
 | Core 1.0, mutable globals | yes | |
 | Sign-extension operators | yes | Emitted by default by Rust and wasi-sdk |
@@ -317,14 +317,16 @@ These are all the functions of `wasi_snapshot_preview1`. A plugin may import any
 
 | Function | Behavior |
 | --- | --- |
-| `fd_write` | For fd 1 and 2, the bytes go into a log buffer for this call and are reported as written. Only the first 16 KB is kept; the rest is dropped. The log is for the plugin author and is never part of the result. For a plugin installed with `--dev` the host writes each call's log to its own log, at level INFO, tagged with the plugin `id`. For a signed plugin the log is discarded, because it may contain the user's source text. For any other fd it returns `EBADF`. |
-| `random_get` | Fills the buffer with pseudo-random bytes from a **fixed seed**. The sequence starts over at the beginning of every call, so equal inputs give equal outputs. |
+| `fd_write` | For fd 1 and 2, the bytes go into a log buffer for this call and are reported as written. Only the first 16 KiB (16,384 bytes) are kept; the rest is dropped, but the count reported is still the full length. The kept bytes are joined first and decoded as UTF-8 once (an invalid byte becomes U+FFFD and a leading byte-order mark is dropped), so a character split between two iovecs or two calls decodes whole, and one cut off by the 16 KiB end decodes as U+FFFD. The log is for the plugin author and is never part of the result. For a plugin installed with `--dev` the host writes each call's log to its own log, at level INFO, tagged with the plugin `id`. For a signed plugin the log is discarded, because it may contain the user's source text. For any other fd it returns `EBADF`. |
+| `random_get` | Fills the buffer with pseudo-random bytes from a **fixed seed**. The sequence starts over at the beginning of every call, so equal inputs give equal outputs, and any split of the same total length into several calls gives the same bytes. The current host and `check-plugin.mjs` use xorshift32 starting from the state `0x9e3779b9` and write the low 8 bits of each new state. It is not secret and not a cryptographic generator, so a plugin MUST NOT use it as one; depend on the stream being fixed, not on particular bytes. |
 | `clock_time_get` | Succeeds and returns a time of 0. |
 | `args_sizes_get`, `args_get`, `environ_sizes_get`, `environ_get` | Succeed and report an empty list: no arguments, no environment variables. |
 | `proc_exit` | Ends the call immediately. It is a **plugin failure**, whatever the exit code. |
 | Every other `fd_*` function and every `path_*` function, including the file-system ones (`path_open`, `fd_read`, `fd_readdir`, ...) and `fd_prestat_get`, `fd_prestat_dir_name` (30 functions in all) | Return `EBADF` (8). They **do not trap**. |
 | `sched_yield` | Succeeds. |
 | The remaining 7 functions (`clock_res_get`, `poll_oneoff`, `proc_raise`, `sock_accept`, `sock_recv`, `sock_send`, `sock_shutdown`) | Return `ENOSYS` (52). They **do not trap**. |
+
+**Pointers, lengths and `EFAULT`.** Pointers and lengths a plugin passes are unsigned 32-bit values. A stub that reads or writes the plugin's memory checks the whole range first. A range that is not inside the memory, or a call made before the instance has a memory (from a start section), returns `EFAULT` (21) and does not trap. That applies to `fd_write` (the iovec array, each buffer and the `nwritten` pointer), `random_get`, `clock_time_get`, `args_sizes_get` and `environ_sizes_get`; a bad fd still gives `EBADF` first. A call checks its pointers in order, so an `EFAULT` can come after earlier effects: `fd_write` has already logged the buffers before the bad one, and `args_sizes_get` has already written the count. Pages added by `memory.grow` are inside the memory from then on.
 
 `fd_prestat_get` returning `EBADF` is not incidental. The first time a program opens a file by path (`fopen`, `open`, ...), wasi-libc probes pre-opened directories from fd 3 upwards, and stops only when it gets `EBADF`; any other error code makes it abort the call with `proc_exit(71)`, which is a plugin failure. (Checked with wasi-sdk 34: with `EBADF`, `fopen` fails with `ENOENT` and the program carries on; with `ENOSYS` the call aborts.) That is why the host answers `EBADF` there.
 
@@ -363,19 +365,20 @@ A file previewer declares `renderFile` instead of, or as well as, `renderBlock`:
 | Field | Required | Rule |
 | --- | --- | --- |
 | `id` | yes | Reverse-domain notation is recommended (`io.github.example.graphviz-dot`). The rule the host enforces is the regular expression `^[a-z0-9]+([.-][a-z0-9]+)*$` and at most 64 characters: lowercase letters and digits in groups separated by single `.` or `-`. An `id` with a single group (`mydiagrams`) is accepted. It cannot change after installation: a different `id` is a different plugin. |
-| `name` | yes | A non-empty string. The name shown to users. |
-| `version` | yes | A [semantic version](https://semver.org), for example `1.2.3` or `1.2.3-beta.1`. |
+| `name` | yes | A non-empty string of at most 100 UTF-16 code units. The name shown to users. |
+| `version` | yes | A [semantic version](https://semver.org), for example `1.2.3` or `1.2.3-beta.1`, of at most 64 UTF-16 code units. The rule the host enforces is the regular expression `^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`, which is looser than semver.org (it admits `01.2.3`); write a real semantic version anyway. |
 | `abi` | yes | The number `1`. It MUST equal the result of `dcode_plugin_abi_version()`. |
-| `description` | no | A string, one sentence of what the plugin does. |
-| `homepage` | no | A string, the address of the plugin's home page. Information for humans only. |
-| `publicKey` | yes | The author's minisign public key: the base64 string on the second line of the `.pub` file (it starts with `RW`). The signature is checked with this key. |
+| `description` | no | A string of at most 2000 UTF-16 code units, one sentence of what the plugin does. |
+| `homepage` | no | A string of at most 500 UTF-16 code units, the address of the plugin's home page. Omitted or `""` means none. Anything else MUST be an `http:` or `https:` URL that JavaScript's `new URL(value)` accepts: `example.com` and `ftp://example.com` are refused (`manifest-invalid`). Information for humans only. |
+| `publicKey` | yes | The author's minisign public key: the base64 string on the second line of the `.pub` file (it starts with `RW`). The signature is checked with this key. The host reads the base64 strictly: white space around it is ignored, but a space or line break inside it, a character outside the standard alphabet (the URL-safe `-` and `_` too) or a value that is not 42 bytes starting with `Ed` is refused (`manifest-invalid`). |
 | `renderBlock` | one of `renderBlock` and `renderFile`, at least | An object with the key `languages`. |
-| `renderBlock.languages` | yes, with `renderBlock` | An array of 1 to 16 strings. Each uses only lowercase letters, digits, `+` and `-`. `mermaid` and `wireframe` may be claimed too: DCode draws them itself, and an enabled plugin that declares one draws it instead. |
+| `renderBlock.languages` | yes, with `renderBlock` | An array of 1 to 16 strings. Each uses only lowercase letters, digits, `+` and `-`, and has at most 32 characters. `mermaid` and `wireframe` may be claimed too: DCode draws them itself, and an enabled plugin that declares one draws it instead. |
 | `renderFile` | one of `renderBlock` and `renderFile`, at least | An object with the key `extensions`. |
 | `renderFile.extensions` | yes, with `renderFile` | An array of 1 to 16 strings, no duplicates. Each is a dot and then lowercase letters, digits, `+` and `-` (`^\.[a-z0-9][a-z0-9+-]*$`), at most 16 characters long: `.sqlite`. It names the end of the file name, so for `archive.tar.gz` only `.gz` counts. The host lowers the case of a file's extension before it looks for a plugin, so `.DB` reaches a plugin that declared `.db`. |
 
 Further rules:
 
+- **Lengths count UTF-16 code units**, as JavaScript's `String.length` does: not bytes and not code points. `é` counts 1 (two bytes) and `😀` counts 2. A string of exactly the limit is accepted and one unit more is refused. The 1 MiB source limit in [Limits](#limits) is the other kind of count, in UTF-8 bytes.
 - Keys the host does not know are ignored.
 - **A plugin declares `renderBlock`, `renderFile` or both.** A manifest with neither is refused (`manifest-invalid`). The exports the module must have follow from the manifest ([Exports](#exports)).
 - **A language can belong to only one installed plugin.** Installing a plugin that declares a language already claimed by another installed plugin is refused. The user has to remove the other one first.
@@ -419,16 +422,16 @@ The host enforces the limits. A plugin does not declare them.
 | Item | Limit | When exceeded |
 | --- | --- | --- |
 | `.wasm` file size | 32 MiB | The plugin is refused at install time |
-| Linear memory (the limit covers nothing else, which is why GC types are refused) | 256 MiB (4096 pages of 64 KiB) | `memory.grow` fails; the plugin returns `-2` or traps |
+| Linear memory (the limit covers nothing else: not the engine's own heap, which is why GC types are refused, and not the whole process) | 256 MiB (4096 pages of 64 KiB) | `memory.grow` fails; the plugin returns `-2` or traps |
 | Time for one call of `dcode_render_block` or `dcode_render_file`, counting instantiation, the start section, `_initialize` and the render function | 5 s | The host terminates the call and reports that rendering timed out |
 | Source size (`renderBlock`) | 1 MiB, counted in UTF-8 bytes (1,048,576) | The plugin is not called; the host reports a failure |
 | File size (`renderFile`) | 32 MiB (33,554,432 bytes) | The file is not read and the plugin is not called; the person is told that the file is too large to preview |
 | Output size (`out.len`), for both render functions | 8 MiB (8,388,608 bytes) | The output is discarded and reported as a plugin failure |
-| Log kept from `fd_write` | 16 KB, the first 16 KB | The rest is dropped; the log is kept only for `--dev` plugins (see [Imports and WASI](#imports-and-wasi)) |
+| Log kept from `fd_write` | 16 KiB (16,384 bytes), the first 16 KiB | The rest is dropped; the log is kept only for `--dev` plugins (see [Imports and WASI](#imports-and-wasi)) |
 
 The 5 s clock starts when the host hands the call to the thread that runs plugins, and everything that thread does for the call is inside it. For a file previewer that includes **reading the file from disk** (a file on a slow or network disk uses part of the 5 s before the plugin starts) and, on the first call after an install, compiling the module. Time spent waiting in the queue behind other calls is not counted.
 
-**The source limit is a transport limit.** The host accepts 1 MiB of source; that does not mean a plugin can render 1 MiB of source in 5 s and 256 MiB. A plugin SHOULD set its own, smaller limits (on bytes, lines, line length or on whatever drives its cost) and return `1` with a message that says which limit was exceeded and what to do ("split the diagram"), instead of running into the time limit. The same goes for the file limit: a file previewer gets up to 32 MiB, sitting in its own memory, and SHOULD preview a start of it instead of working through all of it.
+**The source limit is a transport limit.** The host accepts 1 MiB of source; that does not mean a plugin can render 1 MiB of source in 5 s and 256 MiB of linear memory. A plugin SHOULD set its own, smaller limits (on bytes, lines, line length or on whatever drives its cost) and return `1` with a message that says which limit was exceeded and what to do ("split the diagram"), instead of running into the time limit. The same goes for the file limit: a file previewer gets up to 32 MiB, sitting in its own memory, and SHOULD preview a start of it instead of working through all of it.
 
 About the memory limit: before compiling a module the host rewrites its memory section so that the maximum is 256 MiB. If the module declares a smaller maximum, the smaller one stays. The file on disk is not changed, so the signature stays valid. A module whose *initial* memory is already larger than the limit cannot be installed. A module needs no declared maximum of its own, but it is useful to declare the same one: then a plugin that you run outside the host fails where it would fail inside. For Rust, add `-C link-arg=--max-memory=268435456` to the rustflags (the template does); with wasi-sdk, link with `-Wl,--max-memory=268435456`.
 
@@ -446,8 +449,8 @@ On return value `0`, of either render function, `out` holds one complete SVG doc
 
 - UTF-8, well-formed XML 1.0, with `<svg xmlns="http://www.w3.org/2000/svg" ...>` as the root element. An XML declaration is optional.
 - Text taken from the source MUST be escaped (`&`, `<`, `>` and, inside attributes, `"`). Characters that XML 1.0 does not allow (control characters other than tab, line feed and carriage return, and U+FFFE and U+FFFF) MUST be removed or replaced; one of them makes the whole document unparsable.
-- The SVG SHOULD have a `viewBox` and `width`/`height`, so that the host can scale it.
-- The SVG SHOULD NOT paint a background over its whole area. The host draws it on the surface that matches `theme`. Choose line and text colors that read well on a light surface when `theme` is `"light"`, and light line and text colors on a dark one when `theme` is `"dark"`.
+- The SVG SHOULD have a `viewBox` and `width`/`height`, so that the viewer can scale it.
+- The SVG SHOULD NOT paint a background over its whole area. The viewer draws it on the surface that matches `theme`. Choose line and text colors that read well on a light surface when `theme` is `"light"`, and light line and text colors on a dark one when `theme` is `"dark"`.
 
 **What it MUST NOT contain**
 
@@ -456,27 +459,27 @@ On return value `0`, of either render function, `out` holds one complete SVG doc
 - references to anything outside the document: no `href` or `xlink:href` except `#fragment` references, no `url()` except `url(#id)`, no `@import`, no `javascript:` URLs. In the attributes that can refer to a resource (`fill`, `stroke`, `mask`, `filter`, `clip-path`, `marker`, `marker-start`, `marker-mid`, `marker-end`, `cursor`, and the like) a reference to a resource is written `url(#id)` and nothing else;
 - a backslash `\` in any attribute value. A browser reads `\` in a CSS value as an escape, so `u\rl(https://example.com/)` and `\75 rl(https://example.com/)` both mean `url(https://example.com/)`. No SVG attribute needs a backslash, so none may contain one;
 - `image-set(` or `-webkit-image-set(` in any attribute value: they take an address as a string and fetch it just as `url()` does;
-- fonts other than the generic families `sans-serif`, `serif`, `monospace` and `system-ui`. There is no `@font-face` and no named font: the host cannot load one and the machine that displays the picture might not have it.
+- fonts other than the generic families `sans-serif`, `serif`, `monospace` and `system-ui`. There is no `@font-face` and no named font: the viewer cannot load one and the machine that displays the picture might not have it.
 
-**What the host does about it.** The host sanitizes every SVG before it shows it, and it **always** removes the following. A plugin MUST NOT depend on any of it:
+**What the viewer does about it.** The host does not sanitize: it returns the SVG as the plugin wrote it. It limits the size, requires UTF-8 and, for a code block, refuses the HTML return value `2`; it does not look inside the markup. The *viewer*, DCode's own client (the desktop app and the phone), sanitizes every SVG before it shows it, and it **always** removes the following. A plugin MUST NOT depend on any of it:
 
 | Removed | Why |
 | --- | --- |
-| The elements listed above | Scripts and `foreignObject` run or embed arbitrary content; `<image>` and `<a>` reach outside the document; animation can change what the picture shows after it was reviewed. `<style>` is removed because a CSS rule in it applies to the whole page, not only to your drawing, so one plugin could restyle the host's interface or another plugin's picture. |
-| The `style` attribute | The same reason: CSS in an attribute can position the picture over the host's interface (`position: fixed`), load resources (`url()`), or hide and restyle other content. Presentation attributes cannot do any of that. |
+| The elements listed above | Scripts and `foreignObject` run or embed arbitrary content; `<image>` and `<a>` reach outside the document; animation can change what the picture shows after it was reviewed. `<style>` is removed because a CSS rule in it applies to the whole page, not only to your drawing, so one plugin could restyle the viewer's interface or another plugin's picture. |
+| The `style` attribute | The same reason: CSS in an attribute can position the picture over the viewer's interface (`position: fixed`), load resources (`url()`), or hide and restyle other content. Presentation attributes cannot do any of that. |
 | `href` and `xlink:href` unless the value starts with `#` | Nothing may reach outside the document. |
 | In an attribute that can refer to a resource (`fill`, `stroke`, `mask`, `filter`, `clip-path`, `marker*`, `cursor`, and the like): a `url(` that is not followed by `#id)` | The same: only `url(#id)` stays; an address, a `data:` URL or an empty `url()` is a way out of the document. |
-| Any attribute value that contains a backslash | CSS escapes can spell a function name so that a text search for `url(` does not see it: `u\rl(`, `\75 rl(`. The host does not try to decode them. |
+| Any attribute value that contains a backslash | CSS escapes can spell a function name so that a text search for `url(` does not see it: `u\rl(`, `\75 rl(`. The viewer does not try to decode them. |
 | Any attribute value that contains `image-set(` or `-webkit-image-set(` | They load a resource from an address, like `url()`. |
 
-Where the table says an attribute, the host removes that attribute and keeps the element. If nothing usable is left after sanitizing, that is, there is no `<svg>` root element, the host shows a **plugin failure**, not an empty picture.
+Where the table says an attribute, the viewer removes that attribute and keeps the element. If nothing usable is left after sanitizing, that is, there is no `<svg>` root element, the viewer shows a **plugin failure**, not an empty picture.
 
 That is a second line of defence, not permission to produce such content: **what the plugin outputs is the author's responsibility.** A picture that depends on removed content is shown broken. A common trap: a gradient whose colours are written as `<stop style="stop-color:red">` loses its colours, because the `style` attribute is removed; write `<stop stop-color="red"/>`.
 
-**Shared documents.** The host may place SVGs from several code blocks, and from several plugins, in one HTML document. The SVGs then share one namespace for `id`s. Therefore:
+**Shared documents.** The viewer may place SVGs from several code blocks, and from several plugins, in one HTML document. The SVGs then share one namespace for `id`s. Therefore:
 
 - Give every element `id` a prefix that tells your picture from every **other** picture on the page: your plugin's own prefix plus a hash of the source text and `theme` (for example `bob-3a1c9e4d7b2f6a10-arrow`). Two blocks with exactly the same source and theme then get exactly the same ids, and that is fine: the elements behind those ids are identical too, so it does not matter which of them a reference reaches. What must not happen is that two **different** pictures share an id. So do not use a fixed prefix, a counter that restarts for every call, or the ids of the library you call, unprefixed.
-- Do not use `<style>` blocks or `style` attributes. The host removes them (see above), and they would leak into other pictures if it did not.
+- Do not use `<style>` blocks or `style` attributes. The viewer removes them (see above), and they would leak into other pictures if it did not.
 
 ## HTML output
 
@@ -488,7 +491,7 @@ On return value `2` of `dcode_render_file`, `out` holds an HTML page. DCode neve
 
 - UTF-8 HTML: a complete document, or only what belongs in `<body>`. Use headings, paragraphs, lists, tables, `<pre>` and plain text. A `<style>` element in `<head>`, or a `style` attribute, sets colours, borders, fonts and layout.
 - Text taken from the file (its name, its content) MUST be escaped: `&`, `<` and `>` in text, and also `"` and `'` in attribute values. Characters that HTML does not allow (control characters other than tab, line feed and carriage return) SHOULD be removed or replaced.
-- The page SHOULD NOT paint a background over its whole area; the viewer draws the surface that matches `theme`. Choose colours that read well on a light surface when `theme` is `"light"`, and light text and borders on a dark one when `theme` is `"dark"`. Use generic font families (`sans-serif`, `serif`, `monospace`, `system-ui`, `ui-monospace`); the host cannot load a named font.
+- The page SHOULD NOT paint a background over its whole area; the viewer draws the surface that matches `theme`. Choose colours that read well on a light surface when `theme` is `"light"`, and light text and borders on a dark one when `theme` is `"dark"`. Use generic font families (`sans-serif`, `serif`, `monospace`, `system-ui`, `ui-monospace`); the viewer cannot load a named font.
 - Keep it static and self-contained: no script, no link that must be followed, no image or font from outside. An image or font can be embedded as a `data:` URL; it counts toward the 8 MiB.
 
 **What the viewer does with it**
@@ -511,7 +514,7 @@ That is a second line of defence, not permission to produce such content: **what
 
 ## Conformance checklist
 
-Go through this before you publish a plugin. `tools/check-plugin.mjs` in this repository checks most of it for you: the module shape, the manifest, the signature, the return codes and the SVG rules (see the README); what it cannot know, such as whether your plugin's output is correct, stays with you.
+Go through this before you publish a plugin. `tools/check-plugin.mjs` in this repository checks most of it for you: the module shape, the manifest, the signature, the return codes and the SVG and HTML rules (see the README). A pass means the file follows the rules the host applies; it is not a promise that a particular DCode installs it, because the checker cannot see the public key that host remembers for the `id`, the languages and extensions other installed plugins hold, or the state of its disk. Its author diagnostics (arguments, export types, return values, what the viewer would remove from an SVG or HTML page) are stricter than the host's install check on purpose, and it neither sanitizes nor simulates the viewer. What it cannot know, such as whether your plugin's output is correct, stays with you.
 
 **Module**
 
@@ -537,7 +540,7 @@ Go through this before you publish a plugin. `tools/check-plugin.mjs` in this re
 
 - [ ] `dcode_render_file` returns `0` (SVG), `2` (HTML), `1` (with a message), `-1` or `-2` exactly as the table says, and writes `out` (with an unaligned store) only on `0`, `1` and `2`. `dcode_render_block` never returns `2`.
 - [ ] `name` that is not valid UTF-8, and `opts` that is not a JSON object, give `-1`. `data` is never invalid.
-- [ ] Any bytes give `0`, `1` or `2` and never a trap or a hang: an empty file, one byte, random bytes, a damaged copy of a real file, a file with the right extension and the wrong content, 32 MiB of anything. The last finishes within 5 s and 256 MiB and gives at most 8 MiB of output.
+- [ ] Any bytes give `0`, `1` or `2` and never a trap or a hang: an empty file, one byte, random bytes, a damaged copy of a real file, a file with the right extension and the wrong content, 32 MiB of anything. The last finishes within 5 s and 256 MiB of linear memory and gives at most 8 MiB of output.
 - [ ] A file that is not in the format returns `1` with a message that says so.
 - [ ] The file name and every text from the file are escaped in the output. The preview shows a start of a big file and says that it is a part.
 - [ ] The HTML has nothing the viewer removes: no `<script>`, `<link>`, `<meta>`, `<base>`, `<form>`, `<iframe>`, `<object>`, `<embed>`; no `href`, `ping`, `action`, `srcset`, `poster` or event handler attribute; `src` only on `img`, `video`, `audio`, `source` and `track`, and only as a `data:` URL; no `<frameset>`. Both themes are drawn and readable.
@@ -545,7 +548,7 @@ Go through this before you publish a plugin. `tools/check-plugin.mjs` in this re
 
 **Manifest and signature**
 
-- [ ] There is exactly one `dcode.plugin` section, and it is UTF-8 JSON with the fields in [Manifest](#manifest), and at least one of `renderBlock` and `renderFile`.
+- [ ] There is exactly one `dcode.plugin` section, and it is UTF-8 JSON with the fields in [Manifest](#manifest), within their length limits, and at least one of `renderBlock` and `renderFile`.
 - [ ] `id`, `languages` and `extensions` follow the character rules. If a language is `mermaid` or `wireframe`, you mean to replace DCode's own drawing of it. No extension is one of the formats DCode previews itself.
 - [ ] `publicKey` is your minisign public key; the `.wasm` was signed with the matching secret key **after** its last change; `<file>.wasm.minisig` sits next to it. Your plugin's identity is that whole public key, so a later update must use the same one.
 - [ ] The secret key is backed up, and is not in version control.
@@ -557,8 +560,8 @@ Go through this before you publish a plugin. `tools/check-plugin.mjs` in this re
 - [ ] Only generic font families.
 - [ ] Both themes are drawn and readable on their surfaces; the SVG has no full-size background.
 - [ ] Ids are prefixed with something derived from the source.
-- [ ] A source of 1 MiB finishes within 5 s and 256 MiB and produces at most 8 MiB.
+- [ ] A source of 1 MiB finishes within 5 s and 256 MiB of linear memory and produces at most 8 MiB.
 
 ### What happens at install time
 
-`dcode plugin install` stops at the first failing step and says why: the file is within 32 MiB; the module compiles; the manifest is valid, with at least one extension point, and none of its extensions is a format DCode previews itself; the exports the manifest calls for exist (`dcode_render_file` with 7 parameters) and the imports are allowed; the signature is valid (skipped with `--dev`); the key matches the one remembered for this `id`; none of the languages or extensions is claimed by another installed plugin; the memory limit can be applied to the module; finally the host instantiates the module in a worker and calls `dcode_plugin_abi_version()`, which has to return `1`.
+`dcode plugin install` stops at the first failing step and says why: the file is within 32 MiB; the module compiles; the manifest is valid (types, length limits, at least one extension point), and none of its extensions is a format DCode previews itself; the exports the manifest calls for exist (`dcode_render_file` with 7 parameters) and the imports are allowed; the signature is valid (skipped with `--dev`); the key matches the one remembered for this `id`; none of the languages or extensions is claimed by another installed plugin; the memory limit can be applied to the module; finally the host instantiates the module in a worker and calls `dcode_plugin_abi_version()`, which has to return `1`.

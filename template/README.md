@@ -30,8 +30,8 @@ Copy this directory out of the repository, then:
 1. In `Cargo.toml`, change `name` to your plugin's name.
 2. In `plugin.json`, change:
    - `id`: reverse-domain notation is recommended (`io.github.your-name.text-box`). The rule is `^[a-z0-9]+([.-][a-z0-9]+)*$`, at most 64 characters. It identifies your plugin for good, so pick it once.
-   - `name`, `version`, `description`, `homepage`.
-   - `renderBlock.languages`: the code-block languages you handle (1 to 16 entries; lowercase letters, digits, `+`, `-`). Claiming `mermaid` or `wireframe` replaces DCode's own drawing of it. A language can belong to only one installed plugin.
+   - `name`, `version`, `description`, `homepage`. The host refuses a `name` over 100, a `version` over 64 (it must be `1.2.3`, with an optional `-pre` and `+build`), a `description` over 2000 and a `homepage` over 500 characters, counted in UTF-16 code units; a `homepage` must be an `http://` or `https://` address, or left out.
+   - `renderBlock.languages`: the code-block languages you handle (1 to 16 entries, each at most 32 characters; lowercase letters, digits, `+`, `-`). Claiming `mermaid` or `wireframe` replaces DCode's own drawing of it. A language can belong to only one installed plugin.
    - `publicKey`: see the next step. The value in the template belongs to nobody; no signature can match it.
 3. Write your renderer in `src/lib.rs`.
 4. Regenerate the lock file. The crate rename (the lock file records the package name) and every dependency you add change it, and `build.sh` builds with `--locked`, which refuses to update it and stops with `cannot update the lock file` (exit status 101):
@@ -107,7 +107,7 @@ In `.cargo/config.toml` change `target` to `wasm32-wasip1` and rename the `[targ
 
 ### Wrapping an existing library
 
-Many rendering libraries write SVG for a web page: a `<style>` block, CSS classes, a named font, a background rectangle, ids like `arrow` that two pictures on a page would share. `SPEC.md` forbids all of that ([SVG output](../SPEC.md#svg-output)), and the host removes it anyway, so the picture would come out wrong. If the library has options to switch the CSS and the backdrop off, use them; then translate what is left (classes become presentation attributes such as `fill`, `stroke` and `stroke-dasharray`), choose a generic font family and prefix the ids. `examples/svgbob` shows how for the `svgbob` crate. A library that panics or exhausts memory on large input needs limits of your own: return `1` with a message ([Limits](../SPEC.md#limits)).
+Many rendering libraries write SVG for a web page: a `<style>` block, CSS classes, a named font, a background rectangle, ids like `arrow` that two pictures on a page would share. `SPEC.md` forbids all of that ([SVG output](../SPEC.md#svg-output)), and the viewer removes it anyway, so the picture would come out wrong. If the library has options to switch the CSS and the backdrop off, use them; then translate what is left (classes become presentation attributes such as `fill`, `stroke` and `stroke-dasharray`), choose a generic font family and prefix the ids. `examples/svgbob` shows how for the `svgbob` crate. A library that panics or exhausts memory on large input needs limits of your own: return `1` with a message ([Limits](../SPEC.md#limits)).
 
 ## 5. Sign
 
